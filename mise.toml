@@ -1,0 +1,9 @@
+# Toolchain for azula-openclaw. Exact pins only — see azula-docs'
+# openspec/specs/toolchain/ and the Build / verify section of
+# openspec/project.md.
+#
+# 22.23.2 satisfies OpenClaw's Node 22.22.3+ floor. Pinned here rather than in
+# a package.json `engines` field so local and CI read one declaration.
+
+[tools]
+node = "22.23.2"

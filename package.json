@@ -1,0 +1,24 @@
+{
+  "name": "@azula-app/openclaw",
+  "version": "0.0.1",
+  "description": "Drive an OpenClaw bot from your phone over azula — an OpenClaw channel plugin that speaks to the azula MCP bridge.",
+  "type": "module",
+  "license": "MIT",
+  "openclaw": {
+    "channel": {
+      "id": "azula",
+      "label": "azula"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "openclaw": "^2026.7.1-2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

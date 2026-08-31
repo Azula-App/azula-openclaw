@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    // No .d.ts: this package is loaded by the gateway at runtime, nothing
+    // types against it, and emitting declarations would require naming SDK
+    // types that live in non-exported internal chunks.
+    "declaration": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "skipLibCheck": true
+  },
+  "include": ["index.ts", "setup-entry.ts", "src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
