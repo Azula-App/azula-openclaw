@@ -50,27 +50,43 @@ export function messageIdFromSurface(surfaceId: string): string | null {
  * `"id":"root"` entry, so the root wraps the question and the buttons.
  */
 export function buildChoiceComponents(prompt: ChoicePrompt): unknown[] {
-  return [
+  // A2UI components are a FLAT list addressed by id, not a nested tree:
+  // a container names its children by id, and a Button's label is another
+  // component referenced by `child`. Nesting objects inside `properties`
+  // renders nothing at all — the surface is accepted and simply never appears.
+  const components: unknown[] = [
+    { id: "root", component: "Card", child: "col" },
     {
-      id: "root",
+      id: "col",
       component: "Column",
-      properties: {
-        children: [
-          { id: "question", component: "Text", properties: { text: prompt.text } },
-          ...prompt.choices.map((choice, index) => ({
-            id: `choice-${index}`,
-            component: "Button",
-            properties: {
-              label: choice.label,
-              // The action name carries the choice id, so a tap identifies
-              // itself without the plugin holding per-surface state.
-              action: { name: "choose", value: choice.id },
-            },
-          })),
-        ],
-      },
+      children: ["question", ...prompt.choices.map((_, i) => `btn-${i}`)],
     },
+    { id: "question", component: "Text", text: prompt.text, variant: "h2" },
   ];
+
+  prompt.choices.forEach((choice, index) => {
+    components.push({
+      id: `label-${index}`,
+      component: "Text",
+      text: choice.label,
+    });
+    components.push({
+      id: `btn-${index}`,
+      component: "Button",
+      child: `label-${index}`,
+      variant: index === 0 ? "primary" : "default",
+      // The chosen id travels in the action's context, which is what the
+      // tap's ui-event carries back resolved.
+      action: {
+        event: {
+          name: "choose",
+          context: { choice: choice.id },
+        },
+      },
+    });
+  });
+
+  return components;
 }
 
 /**
@@ -88,37 +104,61 @@ export function choiceFallbackText(prompt: ChoicePrompt): string {
 }
 
 /**
+ * The tap's own fields, which arrive nested under `action`.
+ *
+ * The wire payload is `{"version":"v0.9.1","action":{"name","surfaceId",
+ * "sourceComponentId","context"}}` — the envelope carries a protocol version
+ * and the event itself sits inside `action`. Reading the top level finds
+ * nothing, which is silent: the tap arrives, and simply resolves to no choice
+ * and no surface. Fall back to the top level so a flatter payload from a
+ * different producer still works.
+ */
+function tapFields(event: unknown): Record<string, unknown> | null {
+  if (typeof event !== "object" || event === null) return null;
+  const raw = event as Record<string, unknown>;
+  const action = raw["action"];
+  if (typeof action === "object" && action !== null) {
+    return action as Record<string, unknown>;
+  }
+  return raw;
+}
+
+/**
  * Pull the chosen id out of an A2UI tap payload.
  *
  * Tolerant about where the value sits: A2UI event payloads vary by component,
  * and guessing wrong should mean "no choice recognised" rather than a crash.
  */
 export function choiceFromEvent(event: unknown): string | null {
-  if (typeof event !== "object" || event === null) return null;
-  const raw = event as Record<string, unknown>;
+  const raw = tapFields(event);
+  if (!raw) return null;
 
-  const direct = raw["value"];
-  if (typeof direct === "string" && direct.length > 0) return direct;
-
+  // The real shape: {"name","surfaceId","sourceComponentId","context"}, where
+  // context holds the action's bindings resolved against the data model.
   const context = raw["context"];
   if (typeof context === "object" && context !== null) {
+    const choice = (context as Record<string, unknown>)["choice"];
+    if (typeof choice === "string" && choice.length > 0) return choice;
     const value = (context as Record<string, unknown>)["value"];
     if (typeof value === "string" && value.length > 0) return value;
   }
 
-  const action = raw["action"];
-  if (typeof action === "object" && action !== null) {
-    const value = (action as Record<string, unknown>)["value"];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
+  // Fall back to the button that was tapped, so a surface built elsewhere
+  // still identifies itself rather than resolving to nothing.
+  const source = raw["sourceComponentId"];
+  if (typeof source === "string" && source.length > 0) return source;
+
+  const direct = raw["value"];
+  if (typeof direct === "string" && direct.length > 0) return direct;
 
   return null;
 }
 
 /** The surface a tap came from, when the payload names one. */
 export function surfaceFromEvent(event: unknown): string | null {
-  if (typeof event !== "object" || event === null) return null;
-  const id = (event as Record<string, unknown>)["surfaceId"];
+  const raw = tapFields(event);
+  if (!raw) return null;
+  const id = raw["surfaceId"];
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 

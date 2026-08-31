@@ -7,6 +7,7 @@ import {
   choiceFromEvent,
   messageIdFromSurface,
   SurfaceTracker,
+  surfaceFromEvent,
   surfaceIdFor,
 } from "./surfaces.js";
 import { isAllowed, inviteUrl, pairingMessage, partitionByDevice } from "./access.js";
@@ -110,15 +111,38 @@ describe("surfaces", () => {
     expect(id).toMatch(/^openclaw-[A-Za-z0-9_-]+$/);
   });
 
-  it("builds a tree with exactly one root, as render_ui requires", () => {
+  it("builds a flat component list with exactly one root", () => {
     const components = buildChoiceComponents({
       text: "Deploy?",
       choices: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
-    });
-    const roots = components.filter(
-      (c) => (c as { id?: string }).id === "root",
+    }) as Array<Record<string, unknown>>;
+
+    expect(components.filter((c) => c["id"] === "root")).toHaveLength(1);
+
+    // Flat and id-addressed: a container names children by id, and every id
+    // it names exists. Nesting objects instead renders nothing at all.
+    const ids = new Set(components.map((c) => c["id"] as string));
+    for (const c of components) {
+      for (const child of (c["children"] as string[] | undefined) ?? []) {
+        expect(ids.has(child)).toBe(true);
+      }
+      const single = c["child"] as string | undefined;
+      if (single) expect(ids.has(single)).toBe(true);
+    }
+  });
+
+  it("gives each button an action carrying its choice id", () => {
+    const components = buildChoiceComponents({
+      text: "Deploy?",
+      choices: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }],
+    }) as Array<Record<string, unknown>>;
+
+    const buttons = components.filter((c) => c["component"] === "Button");
+    expect(buttons).toHaveLength(2);
+    const contexts = buttons.map(
+      (b) => ((b["action"] as any)?.event?.context?.choice),
     );
-    expect(roots).toHaveLength(1);
+    expect(contexts).toEqual(["yes", "no"]);
   });
 
   it("writes a fallback that stands on its own", () => {
@@ -131,10 +155,39 @@ describe("surfaces", () => {
     expect(text).toContain("2. No");
   });
 
-  it("finds the chosen value wherever the payload puts it", () => {
-    expect(choiceFromEvent({ value: "a" })).toBe("a");
+  /**
+   * The real payload, captured from a tap on a physical phone: the event sits
+   * under `action`, beside a protocol `version`.
+   */
+  it("reads a real tap payload, which nests the event under `action`", () => {
+    const real = {
+      version: "v0.9.1",
+      action: {
+        context: { choice: "approve" },
+        name: "choose",
+        sourceComponentId: "btn-0",
+        surfaceId: "openclaw-e2e-approval",
+      },
+    };
+    expect(choiceFromEvent(real)).toBe("approve");
+    expect(surfaceFromEvent(real)).toBe("openclaw-e2e-approval");
+  });
+
+  it("still reads a flat payload from a different producer", () => {
+    expect(
+      choiceFromEvent({
+        name: "choose",
+        surfaceId: "openclaw-x",
+        sourceComponentId: "btn-0",
+        context: { choice: "approve" },
+      }),
+    ).toBe("approve");
+  });
+
+  it("falls back to the tapped button, then to a bare value", () => {
+    expect(choiceFromEvent({ sourceComponentId: "btn-1" })).toBe("btn-1");
     expect(choiceFromEvent({ context: { value: "b" } })).toBe("b");
-    expect(choiceFromEvent({ action: { value: "c" } })).toBe("c");
+    expect(choiceFromEvent({ value: "a" })).toBe("a");
     expect(choiceFromEvent({ nothing: true })).toBeNull();
     expect(choiceFromEvent(null)).toBeNull();
   });

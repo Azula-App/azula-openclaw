@@ -33,10 +33,15 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
 };
 
+// A unique session and label per run. Two azula sessions sharing a label are
+// indistinguishable in the app's conversation list, and a deep-linked invite
+// then reopens the existing conversation instead of pairing this session.
+const runId = process.env.E2E_RUN_ID ?? String(process.pid);
+
 const bridge = new AzulaBridge({
   binary: "/Users/sal/Developer/azula/azula-cli/target/debug/azula",
-  session: "openclaw-e2e-run",
-  label: "OpenClaw E2E",
+  session: `openclaw-e2e-${runId}`,
+  label: `OpenClaw E2E ${runId}`,
   device,
   logger,
 });
