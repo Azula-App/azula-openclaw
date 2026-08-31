@@ -136,6 +136,38 @@ try {
 
   await bridge.deleteUi(surfaceId);
   check("surface removed after resolution", true);
+
+  // --- outbound attachment ---------------------------------------------
+  const { writeFileSync, mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "azula-e2e-"));
+  const notePath = join(dir, "from-openclaw.txt");
+  writeFileSync(notePath, "Sent as an attachment by the azula OpenClaw channel.\n");
+  try {
+    await bridge.sendFile(notePath, "a note from the agent");
+    check("outbound attachment sent", true, notePath);
+  } catch (err) {
+    check("outbound attachment sent", false, String(err?.message ?? err));
+  }
+
+  // --- restart keeps one conversation ----------------------------------
+  // The session name is persistent, so the endpoint id -- and therefore the
+  // conversation the phone titles by it -- must survive a restart. A second
+  // conversation appearing would mean the identity was not stable.
+  const before = (await bridge.listDevices()).length;
+  await bridge.stop();
+  await new Promise((r) => setTimeout(r, 1500));
+  await bridge.start();
+  bridge.setDevice(device);
+  const after = (await bridge.listDevices()).length;
+  check(
+    "restart does not fork the conversation",
+    after <= before,
+    `devices before=${before} after=${after}`,
+  );
+  await bridge.sendMessage("Still the same conversation after a restart.");
+  check("message sent after restart", true);
 } catch (err) {
   check("run completed without an unexpected error", false, String(err?.message ?? err));
 } finally {
