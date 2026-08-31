@@ -29,7 +29,7 @@
             "type": "string",
             "minLength": 1,
             "default": "openclaw",
-            "description": "azula session name. Persistent, so the conversation on the phone survives gateway restarts rather than appearing anew each time. Give each account its own name — two accounts sharing one would fight over the same session key."
+            "description": "azula session name. Persistent, so the conversation on the phone survives gateway restarts rather than appearing anew each time. Give each account its own name \u2014 two accounts sharing one would fight over the same session key."
           },
           "label": {
             "type": "string",
@@ -39,7 +39,11 @@
           },
           "dmPolicy": {
             "type": "string",
-            "enum": ["allowlist", "pairing", "open"],
+            "enum": [
+              "allowlist",
+              "pairing",
+              "open"
+            ],
             "default": "allowlist",
             "description": "Reserved for parity with other channels. azula's own device pairing is the real access boundary: only a paired device can reach this machine at all."
           },
@@ -50,17 +54,41 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "enabled": { "type": "boolean" },
-                "device": { "type": "string", "minLength": 1 },
-                "binary": { "type": "string", "minLength": 1 },
-                "session": { "type": "string", "minLength": 1 },
-                "label": { "type": "string", "minLength": 1 }
+                "enabled": {
+                  "type": "boolean"
+                },
+                "device": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "binary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "session": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             }
           }
         },
-        "required": ["device"]
+        "required": [
+          "device"
+        ]
       }
     }
-  }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channels": [
+    "azula"
+  ]
 }
