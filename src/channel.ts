@@ -6,7 +6,12 @@
  * stubbed, so an unimplemented surface reads as absent rather than broken.
  */
 
-import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/channel-core";
+import {
+  createChatChannelPlugin,
+  type ChannelPlugin,
+  type OpenClawConfig,
+} from "openclaw/plugin-sdk/channel-core";
+import { sendMedia, sendText } from "./outbound.js";
 import {
   listAccountIds,
   resolveAccount,
@@ -14,7 +19,8 @@ import {
 } from "./accounts.js";
 import { MAX_FILE_BYTES } from "./bridge.js";
 
-export const CHANNEL_ID = "azula";
+export { CHANNEL_ID } from "./channel-id.js";
+import { CHANNEL_ID } from "./channel-id.js";
 
 /** Pull `channels.azula` out of a gateway config without assuming its shape. */
 function channelConfig(cfg: OpenClawConfig | undefined):
@@ -28,7 +34,7 @@ function channelConfig(cfg: OpenClawConfig | undefined):
     : undefined;
 }
 
-export const azulaChannelPlugin: ChannelPlugin<ResolvedAzulaAccount> = {
+const base = {
   id: CHANNEL_ID,
 
   meta: {
@@ -45,7 +51,7 @@ export const azulaChannelPlugin: ChannelPlugin<ResolvedAzulaAccount> = {
   capabilities: {
     // One paired phone per account: a direct conversation, no groups or
     // threads to model.
-    chatTypes: ["direct"],
+    chatTypes: ["direct" as const],
     media: true,
     reply: false,
     reactions: false,
@@ -75,6 +81,31 @@ export const azulaChannelPlugin: ChannelPlugin<ResolvedAzulaAccount> = {
     },
   },
 };
+
+/**
+ * The channel, with outbound composed on.
+ *
+ * `createChatChannelPlugin` fills in the delivery plumbing (chunking,
+ * formatting, the `channel` field on every result) around these two hooks, so
+ * the plugin only has to say what "send" means for azula.
+ */
+export const azulaChannelPlugin: ChannelPlugin<ResolvedAzulaAccount> =
+  createChatChannelPlugin<ResolvedAzulaAccount>({
+    base,
+    outbound: {
+      base: {
+        // azula owns the connection, so the plugin delivers directly rather
+        // than handing payloads to the gateway to route.
+        deliveryMode: "direct",
+        chunkerMode: "markdown",
+      },
+      attachedResults: {
+        channel: CHANNEL_ID,
+        sendText,
+        sendMedia,
+      },
+    },
+  });
 
 /**
  * The per-message media ceiling advertised to the gateway.
