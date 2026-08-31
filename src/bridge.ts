@@ -147,6 +147,23 @@ export class AzulaBridge {
     }
   }
 
+  /** The devices this session knows, one line each, with their status. */
+  async listDevices(): Promise<string[]> {
+    const listed = await this.#need().callOrThrow("list_devices", {});
+    return listed.split("\n").map((l) => l.trim()).filter(Boolean);
+  }
+
+  /**
+   * Retarget this bridge at a different device.
+   *
+   * Only for flows that discover the device after connecting — a phone that
+   * dials in names itself, and until it does there is nothing to address.
+   * Normal operation configures the device up front.
+   */
+  setDevice(device: string): void {
+    this.opts.device = device;
+  }
+
   /** Send chat text. azula's queued delivery counts as sent, not failed. */
   async sendMessage(text: string): Promise<void> {
     await this.#need().callOrThrow("send_message", {
@@ -250,9 +267,16 @@ export class AzulaBridge {
    * A tool-reported error is raised; a malformed individual event is skipped
    * and counted, so one bad payload cannot stall the pump.
    */
-  async getEvents(timeoutSeconds?: number): Promise<AzulaEvent[]> {
+  async getEvents(
+    timeoutSeconds?: number,
+    opts?: { allDevices?: boolean },
+  ): Promise<AzulaEvent[]> {
     const body = await this.#need().callOrThrow("get_events", {
-      device: this.opts.device,
+      // Scoped to the account's device by default. The all-devices drain is
+      // for the window before a device is known — a phone dialling in names
+      // itself in a `connected` event, and there is nothing to scope to until
+      // it does.
+      ...(opts?.allDevices ? {} : { device: this.opts.device }),
       ...(timeoutSeconds === undefined ? {} : { timeout_s: timeoutSeconds }),
     });
     const { events, skipped } = parseAzulaEvents(body);
