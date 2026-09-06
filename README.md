@@ -33,7 +33,7 @@ chat channel, alongside WhatsApp, Telegram and the rest.
 ## Install
 
 ```bash
-openclaw plugins install @azula-app/openclaw --accept-capabilities
+openclaw plugins install @azula-app/openclaw --force --accept-capabilities
 ```
 
 Then restart the gateway so it loads.
@@ -43,6 +43,12 @@ plugin registers and asks you to consent to them; this one registers **a single
 chat channel (`azula`) and nothing else** — no providers, tools, hooks, MCP
 servers, CLI commands, skills, or dangerous config flags. Its manifest declares
 exactly that, so what you are shown is what you get.
+
+`--force` acknowledges a second, separate warning: this package is not in
+ClawHub, OpenClaw's reviewed plugin index, so the gateway asks you to confirm
+you trust the source. That gate is about ClawHub review metadata, not about
+where the package came from — it fires for an npm install exactly as it does
+for a local path.
 
 What the surface vocabulary *cannot* express, and you should know anyway:
 running this channel means OpenClaw launches the **`azula` binary as a child
@@ -138,9 +144,8 @@ openclaw --profile dev plugins install "$PWD" --force --accept-capabilities
 openclaw --profile dev plugins doctor
 ```
 
-`--force` is needed only here: OpenClaw warns that a local path is outside
-ClawHub's review and trust metadata, which is the right warning for a directory
-you are editing. The published install above does not need it.
+Same two flags as the published install — the ClawHub trust warning is not
+specific to local paths.
 
 The test suite includes tests that run against a **real** `azula mcp` process
 when a locally built binary is present, and skip cleanly when it isn't.
