@@ -20,7 +20,10 @@ chat channel, alongside WhatsApp, Telegram and the rest.
 
 ## Requirements
 
-- **OpenClaw** (Node 22.22.3+; this repo pins 22.23.2 in `mise.toml`).
+- **OpenClaw 2026.9.2** — the release this plugin is built and tested against,
+  pinned exactly. OpenClaw versions are dates, not semver, so a range would say
+  nothing about compatibility. Node 22.22.3+; this repo pins 22.23.2 in
+  `mise.toml`.
 - **azula** on the gateway machine, new enough to provide `get_events` and
   `set_typing`. The plugin checks at startup and refuses to run with a clear
   message rather than failing per-message later.
@@ -30,10 +33,21 @@ chat channel, alongside WhatsApp, Telegram and the rest.
 ## Install
 
 ```bash
-openclaw plugins install @azula-app/openclaw
+openclaw plugins install @azula-app/openclaw --accept-capabilities
 ```
 
 Then restart the gateway so it loads.
+
+`--accept-capabilities` is not boilerplate. OpenClaw shows you the surfaces a
+plugin registers and asks you to consent to them; this one registers **a single
+chat channel (`azula`) and nothing else** — no providers, tools, hooks, MCP
+servers, CLI commands, skills, or dangerous config flags. Its manifest declares
+exactly that, so what you are shown is what you get.
+
+What the surface vocabulary *cannot* express, and you should know anyway:
+running this channel means OpenClaw launches the **`azula` binary as a child
+process** and reads the local files you ask it to attach. That is how it reaches
+your phone; there is no network service in between.
 
 ## Configure
 
@@ -115,6 +129,18 @@ npm install
 npm run typecheck
 npm test
 ```
+
+To install a working copy into a throwaway gateway profile:
+
+```bash
+npm run build
+openclaw --profile dev plugins install "$PWD" --force --accept-capabilities
+openclaw --profile dev plugins doctor
+```
+
+`--force` is needed only here: OpenClaw warns that a local path is outside
+ClawHub's review and trust metadata, which is the right warning for a directory
+you are editing. The published install above does not need it.
 
 The test suite includes tests that run against a **real** `azula mcp` process
 when a locally built binary is present, and skip cleanly when it isn't.
