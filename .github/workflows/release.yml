@@ -1,0 +1,94 @@
+name: Release
+
+# Publishes @azula-app/openclaw to npm on a v* tag push.
+#
+# **This file's name is part of the credential.** npm Trusted Publishing
+# matches the OIDC identity of this workflow against the trusted publisher
+# configured on the package — owner `Azula-App`, repo `azula-openclaw`,
+# workflow file `release.yml`. Renaming or moving this file breaks publishing
+# until that config is updated, and it breaks at the moment you try to ship
+# rather than when you make the change.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Two tags pushed close together would race for the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish-npm:
+    name: Publish to npm
+    # Opt-in via a repo VARIABLE (Settings → Variables), not a secret: Trusted
+    # Publishing needs no secret, so there is nothing to gate on otherwise.
+    # Flip PUBLISH_NPM to `true` when you want tags to actually ship.
+    if: ${{ vars.PUBLISH_NPM == 'true' }}
+    runs-on: ubuntu-latest
+
+    # Trusted Publishing (OIDC) — no NPM_TOKEN anywhere. `id-token: write` is
+    # what lets npm verify this workflow is who it claims to be.
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Node comes from mise.toml — do not restate the version here.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      # setup-node is kept ONLY for registry-url, which writes the .npmrc that
+      # Trusted Publishing reads. Deliberately no node-version: that would be a
+      # second source of truth alongside mise.toml.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          registry-url: "https://registry.npmjs.org"
+
+      # OIDC publishing needs npm >= 11.5.1. This repo pins node 22.23.2 —
+      # OpenClaw's own floor, deliberately, so development catches anything
+      # that needs a newer runtime — and node 22 ships npm 10.x. So npm is
+      # upgraded here rather than raising the node pin, which would mean
+      # developing above the floor the plugin claims to support.
+      - name: Ensure npm >= 11.5.1 (Trusted Publishing floor)
+        run: |
+          set -euo pipefail
+          npm install -g npm@^11.5.1
+          npm --version
+
+      # A tag that disagrees with package.json publishes a version nobody
+      # asked for, under a tag that then points at the wrong thing. Fail here,
+      # before anything is uploaded.
+      - name: Check the tag matches package.json
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match package.json version $PKG"
+            exit 1
+          fi
+          echo "publishing version $PKG"
+
+      - run: npm ci
+
+      # Publishing something that does not typecheck or pass its tests is
+      # worse than not publishing: it cannot be unpublished after 72 hours.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # No NODE_AUTH_TOKEN: npm detects the OIDC-capable runner, exchanges
+      # this workflow's identity for a short-lived token itself, and — now the
+      # repo is public — generates provenance attestations automatically. Same
+      # as azula-cli; there is no --provenance flag to pass.
+      #
+      # --access public because a scoped package defaults to restricted, and a
+      # restricted plugin cannot be installed by the people it is for.
+      - name: Publish
+        run: npm publish --access public
