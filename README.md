@@ -112,8 +112,12 @@ machine. The plugin ships a helper that starts that session exactly as the
 channel will, prints its invite as a URL and QR, and waits for the phone:
 
 ```bash
-node ~/.openclaw/extensions/azula/scripts/pair.mjs        # --session/--label/--binary to match your config
+openclaw plugins inspect azula | grep 'Install path:'   # where OpenClaw put the plugin
+node <install path>/scripts/pair.mjs                    # add --session/--label/--binary to match your config
 ```
+
+(An npm install lands under `~/.openclaw/npm/projects/…/node_modules/@azula-app/openclaw`,
+not `~/.openclaw/extensions/`, so ask OpenClaw rather than guessing.)
 
 Run it on the gateway machine as the gateway's user, before enabling the
 channel (one session can't be held by two processes). In the azula app, tap
