@@ -26,6 +26,12 @@ export type McpClientOptions = {
   /** Arguments after the binary — normally `mcp --session … --name …`. */
   args: string[];
   logger: Logger;
+  /**
+   * Variables layered over the inherited environment for the child. Unset (the
+   * production case) the child inherits the gateway's environment unchanged;
+   * tests use it to point `azula` at a scratch `HOME`.
+   */
+  env?: NodeJS.ProcessEnv;
   /** How long a single tool call may take before it is abandoned. */
   requestTimeoutMs?: number;
   /** Called when the child exits for any reason, expected or not. */
@@ -89,6 +95,7 @@ export class AzulaMcpClient {
     try {
       child = spawn(this.opts.command, this.opts.args, {
         stdio: ["pipe", "pipe", "pipe"],
+        ...(this.opts.env ? { env: { ...process.env, ...this.opts.env } } : {}),
       });
     } catch (err) {
       throw new McpError(

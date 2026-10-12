@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -61,6 +61,7 @@ describe("sendText", () => {
 
 describe("sendMedia", () => {
   const dir = mkdtempSync(join(tmpdir(), "azula-openclaw-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   it("attaches a local file, using the text as its caption", async () => {
     const sent = fakeRuntime();

@@ -55,6 +55,8 @@ export type BridgeOptions = {
   /** The azula device this account talks to. */
   device: string;
   logger: Logger;
+  /** Variables layered over the inherited environment for the `azula` child. */
+  env?: NodeJS.ProcessEnv;
 };
 
 export class AzulaBridge {
@@ -99,6 +101,7 @@ export class AzulaBridge {
         this.opts.label,
       ],
       logger: this.opts.logger,
+      ...(this.opts.env ? { env: this.opts.env } : {}),
       ...(onExit ? { onExit } : {}),
     });
 
