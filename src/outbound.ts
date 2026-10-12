@@ -11,9 +11,8 @@ import { fileURLToPath } from "node:url";
 import { CHANNEL_ID } from "./channel-id.js";
 import {
   assertSendableSize,
-  getRuntime,
   nextMessageId,
-  NoRuntimeError,
+  requireRuntime,
 } from "./runtime.js";
 
 /** The subset of the outbound context these hooks actually read. */
@@ -32,8 +31,7 @@ export type OutboundCtx = {
  * unknown device, say) becomes a send error here.
  */
 export async function sendText(ctx: OutboundCtx): Promise<{ messageId: string }> {
-  const runtime = getRuntime(ctx.accountId);
-  if (!runtime) throw new NoRuntimeError(ctx.accountId);
+  const runtime = requireRuntime(ctx.accountId);
 
   const text = ctx.text ?? "";
   await runtime.bridge.sendMessage(text);
@@ -48,8 +46,7 @@ export async function sendText(ctx: OutboundCtx): Promise<{ messageId: string }>
  * through a chunked transfer.
  */
 export async function sendMedia(ctx: OutboundCtx): Promise<{ messageId: string }> {
-  const runtime = getRuntime(ctx.accountId);
-  if (!runtime) throw new NoRuntimeError(ctx.accountId);
+  const runtime = requireRuntime(ctx.accountId);
 
   const mediaUrl = ctx.mediaUrl;
   if (!mediaUrl) {

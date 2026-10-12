@@ -59,6 +59,16 @@ export type BridgeOptions = {
 
 export class AzulaBridge {
   #client: AzulaMcpClient | null = null;
+  /**
+   * A client whose handshake is still in flight.
+   *
+   * Tracked separately from {@link #client} (which only ever holds a *working*
+   * bridge) so that {@link stop} can kill a child that has been spawned but has
+   * not finished initialising. Without it, an abort that lands during startup
+   * would find nothing to stop and the child would outlive the gateway's
+   * shutdown.
+   */
+  #starting: AzulaMcpClient | null = null;
 
   constructor(private readonly opts: BridgeOptions) {}
 
@@ -92,9 +102,14 @@ export class AzulaBridge {
       ...(onExit ? { onExit } : {}),
     });
 
+    this.#starting = client;
     try {
       await client.start();
     } catch (err) {
+      // A handshake that failed part-way (timeout, the child dying, a protocol
+      // error) leaves a spawned `azula mcp` behind. Nothing else holds a
+      // reference to it, so reap it here rather than leaking one per attempt.
+      await client.stop().catch(() => {});
       if (err instanceof McpError && err.kind === "spawn") {
         throw new AzulaConfigError(
           `the azula binary could not be run ('${this.opts.binary}')`,
@@ -102,6 +117,8 @@ export class AzulaBridge {
         );
       }
       throw err;
+    } finally {
+      if (this.#starting === client) this.#starting = null;
     }
 
     const missing = REQUIRED_TOOLS.filter(
@@ -118,9 +135,18 @@ export class AzulaBridge {
     this.#client = client;
   }
 
+  /**
+   * Stop the bridge: kill the child, whether it is serving or still starting.
+   *
+   * Killing the child rejects anything in flight — including a 25-second
+   * `get_events` long-poll — which is what lets shutdown be prompt instead of
+   * waiting out the poll. Safe to call repeatedly.
+   */
   async stop(): Promise<void> {
-    await this.#client?.stop();
+    const serving = this.#client;
+    const starting = this.#starting;
     this.#client = null;
+    await Promise.all([serving?.stop(), starting?.stop()]);
   }
 
   #need(): AzulaMcpClient {

@@ -18,6 +18,8 @@ import {
   type ResolvedAzulaAccount,
 } from "./accounts.js";
 import { MAX_FILE_BYTES } from "./bridge.js";
+import { createGatewayAdapter } from "./gateway.js";
+import { azulaStatus } from "./status.js";
 
 export { CHANNEL_ID } from "./channel-id.js";
 import { CHANNEL_ID } from "./channel-id.js";
@@ -61,6 +63,14 @@ const base = {
     groupManagement: false,
     polls: false,
   },
+
+  // What actually runs the channel: starts an account's bridge, polls it for
+  // the phone's messages, and tears it down. Without this the plugin loads but
+  // nothing is ever listening — every send fails and nothing arrives.
+  gateway: createGatewayAdapter(),
+
+  // So `channels status` can show *why* an account is blocked, not just that it is.
+  status: azulaStatus,
 
   config: {
     listAccountIds: (cfg?: OpenClawConfig) => listAccountIds(channelConfig(cfg)),

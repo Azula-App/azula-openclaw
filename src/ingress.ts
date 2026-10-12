@@ -7,9 +7,11 @@
  * dispatching and recording replays them unless the claim is committed after.
  *
  * Design D6 named `createChannelIngressMonitor`/`createIngressEffectOnce` for
- * this, from the plugin docs. Those do not exist in the shipped SDK
- * (2026.7.1-2) — `createClaimableDedupe` is what it actually provides, and it
- * has exactly the claim/commit/release shape the property needs.
+ * this, from the plugin docs. Neither existed in the SDK this was first built
+ * against (2026.7.1-2); `createClaimableDedupe` did, and has exactly the
+ * claim/commit/release shape the property needs. OpenClaw 2026.10 does ship the
+ * durable ingress monitor, which would also survive a crash between draining
+ * and dispatching; adopting it is a separate change from wiring the lifecycle.
  */
 
 import type { ClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
@@ -100,13 +102,19 @@ export async function dispatchOnce(
 /**
  * Whether a claim result means "someone already has this".
  *
- * The result shape varies across SDK versions, so this reads the flags it
- * knows and treats an unrecognised shape as *not* a duplicate — delivering
- * twice is recoverable and visible; dropping silently is neither.
+ * OpenClaw 2026.10 answers `{ kind: "claimed" | "duplicate" | "inflight" }`.
+ * `duplicate` is an item that was already committed; `inflight` is one another
+ * caller is dispatching right now. Either way this caller must not dispatch it
+ * too. The older flag shapes are still read so a differently-shaped dedupe (a
+ * test double, a future SDK) behaves the same way.
+ *
+ * An unrecognised shape is treated as *not* a duplicate — delivering twice is
+ * recoverable and visible; dropping silently is neither.
  */
 export function isDuplicate(claim: unknown): boolean {
   if (typeof claim !== "object" || claim === null) return false;
   const raw = claim as Record<string, unknown>;
+  if (raw["kind"] === "duplicate" || raw["kind"] === "inflight") return true;
   if (raw["duplicate"] === true) return true;
   if (raw["claimed"] === false) return true;
   if (raw["status"] === "duplicate") return true;

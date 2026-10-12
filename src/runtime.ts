@@ -17,16 +17,56 @@ export type AccountRuntime = {
 
 const runtimes = new Map<string, AccountRuntime>();
 
+/**
+ * Why an account has no runtime, when the lifecycle knows.
+ *
+ * "No running bridge" alone sends the operator hunting; the reason (binary
+ * missing, phone not paired, ...) is already known to the lifecycle, so it is
+ * kept here and folded into the send error.
+ */
+const unavailable = new Map<string, string>();
+
+const keyFor = (accountId?: string | null) => accountId?.trim() || "default";
+
 export function registerRuntime(accountId: string, runtime: AccountRuntime): void {
+  unavailable.delete(keyFor(accountId));
   runtimes.set(accountId, runtime);
 }
 
-export function unregisterRuntime(accountId: string): void {
+/**
+ * Drop an account's runtime.
+ *
+ * Pass `expected` to remove it only if it is still the registered one. A
+ * stopping lifecycle must not tear down the registration of the lifecycle that
+ * replaced it — the gateway can start the successor before a slow stop has
+ * finished.
+ */
+export function unregisterRuntime(
+  accountId: string,
+  expected?: AccountRuntime,
+): void {
+  if (expected && runtimes.get(accountId) !== expected) return;
   runtimes.delete(accountId);
 }
 
+/** Record why an account cannot currently send. Cleared by {@link registerRuntime}. */
+export function markUnavailable(accountId: string, reason: string): void {
+  unavailable.set(keyFor(accountId), reason);
+}
+
+export function unavailableReason(accountId?: string | null): string | undefined {
+  return unavailable.get(keyFor(accountId));
+}
+
 export function getRuntime(accountId?: string | null): AccountRuntime | undefined {
-  return runtimes.get(accountId?.trim() || "default");
+  return runtimes.get(keyFor(accountId));
+}
+
+/** The runtime for an account, or a {@link NoRuntimeError} saying why there is none. */
+export function requireRuntime(accountId?: string | null): AccountRuntime {
+  const runtime = getRuntime(accountId);
+  if (!runtime) throw new NoRuntimeError(accountId, unavailableReason(accountId));
+  return runtime;
 }
 
 /** Every live account, for shutdown. */
@@ -36,12 +76,14 @@ export function allRuntimes(): Array<[string, AccountRuntime]> {
 
 export function clearRuntimes(): void {
   runtimes.clear();
+  unavailable.clear();
 }
 
 export class NoRuntimeError extends Error {
-  constructor(accountId?: string | null) {
+  constructor(accountId?: string | null, reason?: string) {
     super(
-      `the azula channel has no running bridge for account '${accountId ?? "default"}'`,
+      `the azula channel has no running bridge for account '${accountId ?? "default"}'` +
+        (reason ? `: ${reason}` : ""),
     );
     this.name = "NoRuntimeError";
   }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
 import { dispatchOnce, ingressKey, isDuplicate } from "./ingress.js";
 import type { InboundItem } from "./inbound.js";
 
@@ -50,6 +51,13 @@ describe("ingressKey", () => {
 });
 
 describe("isDuplicate", () => {
+  /** The shape OpenClaw 2026.10's createClaimableDedupe actually returns. */
+  it("recognises the SDK's { kind } results", () => {
+    expect(isDuplicate({ kind: "duplicate" })).toBe(true);
+    expect(isDuplicate({ kind: "inflight", pending: Promise.resolve(true) })).toBe(true);
+    expect(isDuplicate({ kind: "claimed" })).toBe(false);
+  });
+
   it("recognises the shapes it knows", () => {
     expect(isDuplicate({ duplicate: true })).toBe(true);
     expect(isDuplicate({ claimed: false })).toBe(true);
@@ -176,5 +184,75 @@ describe("dispatchOnce", () => {
 
     expect(seen).toEqual(["good", "also good"]);
     expect(result).toMatchObject({ dispatched: 2, failed: 1 });
+  });
+});
+
+/**
+ * The fake above answers in a shape this module was written against. These run
+ * against the SDK's own dedupe, whose claim results are `{ kind }` objects — a
+ * mismatch here would mean every replayed item is delivered twice, silently.
+ */
+describe("dispatchOnce against the SDK's claimable dedupe", () => {
+  const sdkDedupe = () => createClaimableDedupe({ ttlMs: 60_000, memoryMaxSize: 100 });
+
+  it("skips an item already committed", async () => {
+    const dedupe = sdkDedupe();
+    const seen: string[] = [];
+    const deps = {
+      dedupe,
+      logger: quietLogger,
+      account: "default",
+      dispatch: async (item: InboundItem) => {
+        if (item.kind === "message") seen.push(item.text);
+      },
+    };
+
+    await dispatchOnce(deps, "batch-1", [message("one"), message("two")]);
+    const replay = await dispatchOnce(deps, "batch-1", [message("one"), message("two")]);
+
+    expect(seen).toEqual(["one", "two"]);
+    expect(replay).toMatchObject({ dispatched: 0, skipped: 2, failed: 0 });
+  });
+
+  it("does not dispatch an item another caller is dispatching right now", async () => {
+    const dedupe = sdkDedupe();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let runs = 0;
+    const deps = {
+      dedupe,
+      logger: quietLogger,
+      account: "default",
+      dispatch: async () => {
+        runs += 1;
+        await gate;
+      },
+    };
+
+    const first = dispatchOnce(deps, "batch-1", [message("one")]);
+    // Same batch, same item, while the first is still in flight.
+    const second = await dispatchOnce(deps, "batch-1", [message("one")]);
+    release();
+    await first;
+
+    expect(runs).toBe(1);
+    expect(second).toMatchObject({ dispatched: 0, skipped: 1 });
+  });
+
+  it("lets a failed item be retried", async () => {
+    const dedupe = sdkDedupe();
+    let attempts = 0;
+    const deps = {
+      dedupe,
+      logger: quietLogger,
+      account: "default",
+      dispatch: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("agent unavailable");
+      },
+    };
+
+    expect(await dispatchOnce(deps, "batch-1", [message("one")])).toMatchObject({ failed: 1 });
+    expect(await dispatchOnce(deps, "batch-1", [message("one")])).toMatchObject({ dispatched: 1 });
   });
 });

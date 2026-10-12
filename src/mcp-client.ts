@@ -53,6 +53,9 @@ export type ToolResult = { text: string; isError: boolean };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 180_000;
 
+/** How long a bridge gets to honour SIGTERM before it is SIGKILLed. */
+const KILL_GRACE_MS = 2_000;
+
 export class AzulaMcpClient {
   #child: ChildProcessWithoutNullStreams | null = null;
   #rl: Interface | null = null;
@@ -167,7 +170,13 @@ export class AzulaMcpClient {
     return text;
   }
 
-  /** Terminate the bridge and fail anything still in flight. */
+  /**
+   * Terminate the bridge and fail anything still in flight.
+   *
+   * SIGTERM first; a bridge that ignores it is SIGKILLed after
+   * {@link KILL_GRACE_MS} rather than left behind. A child that has already
+   * exited is not waited for — there is no exit event left to arrive.
+   */
   async stop(): Promise<void> {
     const child = this.#child;
     if (!child) return;
@@ -175,17 +184,25 @@ export class AzulaMcpClient {
     this.#rl?.close();
     this.#rl = null;
 
-    const exited = new Promise<void>((resolve) => {
-      const done = () => resolve();
-      child.once("exit", done);
-      // A bridge that ignores SIGTERM should not hang shutdown.
-      setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
-        resolve();
-      }, 3_000).unref?.();
-    });
-    child.kill("SIGTERM");
-    await exited;
+    const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+    if (!hasExited()) {
+      await new Promise<void>((resolve) => {
+        const escalate = setTimeout(() => {
+          if (!hasExited()) child.kill("SIGKILL");
+        }, KILL_GRACE_MS);
+        // SIGKILL cannot be ignored, but do not let a wedged process table
+        // hold shutdown forever either.
+        const giveUp = setTimeout(resolve, KILL_GRACE_MS + 1_000);
+        escalate.unref?.();
+        giveUp.unref?.();
+        child.once("exit", () => {
+          clearTimeout(escalate);
+          clearTimeout(giveUp);
+          resolve();
+        });
+        child.kill("SIGTERM");
+      });
+    }
 
     this.#child = null;
     this.#failAll(new McpError("azula bridge stopped", "closed"));

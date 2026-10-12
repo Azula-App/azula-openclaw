@@ -73,8 +73,15 @@ your phone; there is no network service in between.
 Check it:
 
 ```bash
-openclaw channels list
+openclaw channels list      # is it configured
+openclaw channels status    # is it running — and, if not, why
 ```
+
+If the channel cannot start — `azula` isn't installed, it's too old, or the
+phone named in `device` isn't paired — `channels status` shows the error with
+the fix, and the account stays stopped rather than retrying: nothing a retry
+could do would cure it. Fix the problem, then restart the channel (or the
+gateway). Other channels are unaffected either way.
 
 ### More than one phone
 
@@ -126,6 +133,22 @@ Inbound events are **typed at the source** rather than parsed back out of
 rendered text. That's what keeps a tap on a button distinguishable from a user
 who literally types `ui-event: {...}`, and what preserves an attachment's
 facts.
+
+When the gateway starts an account, the plugin spawns `azula mcp`, confirms the
+phone is paired, and starts long-polling it. Each message is handed to the agent
+as an ordinary direct message from the phone — slash commands included, since
+the paired phone is the one sender this channel admits — and the agent's replies
+go back through the same session. A file you send is copied into OpenClaw's media
+store first (the gateway won't read attachments from outside it), so the agent
+sees it like any other channel's. While the agent is working on a turn the phone
+shows the thinking indicator; it is cleared when the turn ends, however it ends.
+
+If the `azula` process dies, the plugin restarts it with backoff and carries on.
+Stopping the account — a reload, a config change, the gateway shutting down —
+kills the process at once, even mid-poll.
+
+Messages are handled one at a time, in the order they arrive: a message sent
+while the agent is still busy with the previous one waits its turn.
 
 ## Development
 
