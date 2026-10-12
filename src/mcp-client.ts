@@ -133,7 +133,7 @@ export class AzulaMcpClient {
     await this.#request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "azula-openclaw", version: "0.0.3" },
+      clientInfo: { name: "azula-openclaw", version: "0.0.4" },
     });
     this.#notify("notifications/initialized", {});
 
