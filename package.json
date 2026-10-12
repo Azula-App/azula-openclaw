@@ -26,6 +26,7 @@
   },
   "files": [
     "dist",
+    "scripts/pair.mjs",
     "openclaw.plugin.json",
     "README.md"
   ],

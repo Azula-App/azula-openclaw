@@ -106,14 +106,22 @@ two cannot collide; inheriting one name would undo exactly that.
 
 ## Pairing
 
-If the phone isn't paired with the gateway machine yet, get an invite:
+The phone pairs with the channel's own azula session — the persistent identity
+named by `session` (`openclaw` unless you changed it) — not just with the
+machine. The plugin ships a helper that starts that session exactly as the
+channel will, prints its invite as a URL and QR, and waits for the phone:
 
 ```bash
-azula pair
+node ~/.openclaw/extensions/azula/scripts/pair.mjs        # --session/--label/--binary to match your config
 ```
 
-or let the channel show you one — it surfaces azula's own invite URL and QR
-rather than inventing a second pairing code.
+Run it on the gateway machine as the gateway's user, before enabling the
+channel (one session can't be held by two processes). In the azula app, tap
+**+ connect a peer** and scan the QR or open the link. The helper then prints
+the device name to set as `channels.azula.device`.
+
+The channel does not show an invite itself, and `azula pair` is the opposite
+direction — it imports a device's ticket rather than producing an invite.
 
 ## How it works
 
