@@ -20,10 +20,10 @@ chat channel, alongside WhatsApp, Telegram and the rest.
 
 ## Requirements
 
-- **OpenClaw 2026.9.2** — the release this plugin is built and tested against,
+- **OpenClaw 2026.10.2** — the release this plugin is built and tested against,
   pinned exactly. OpenClaw versions are dates, not semver, so a range would say
-  nothing about compatibility. Node 22.22.3+; this repo pins 22.23.2 in
-  `mise.toml`.
+  nothing about compatibility. Node 24.16.0+ (24.x) or 26.1.0+ — OpenClaw
+  2026.10 dropped Node 22; this repo pins 24.20.0 in `mise.toml`.
 - **azula** on the gateway machine, new enough to provide `get_events` and
   `set_typing`. The plugin checks at startup and refuses to run with a clear
   message rather than failing per-message later.
@@ -146,6 +146,11 @@ openclaw --profile dev plugins doctor
 
 Same two flags as the published install — the ClawHub trust warning is not
 specific to local paths.
+
+Use an `openclaw` that lives outside this checkout (a global install). Running
+this repo's own `node_modules/.bin/openclaw` against `"$PWD"` makes OpenClaw's
+bundled plugins sit inside the install's source path, and 2026.10.2 then
+refuses the install with `package owner "azula" has conflicting child rows`.
 
 The test suite includes tests that run against a **real** `azula mcp` process
 when a locally built binary is present, and skip cleanly when it isn't.

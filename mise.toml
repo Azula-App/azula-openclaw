@@ -2,8 +2,9 @@
 # openspec/specs/toolchain/ and the Build / verify section of
 # openspec/project.md.
 #
-# 22.23.2 satisfies OpenClaw's Node 22.22.3+ floor. Pinned here rather than in
-# a package.json `engines` field so local and CI read one declaration.
+# 24.20.0 satisfies OpenClaw 2026.10.2's Node floor (>=24.16.0 <25 || >=26.1.0
+# — 2026.10 dropped Node 22). Pinned here rather than in a package.json
+# `engines` field so local and CI read one declaration.
 
 [tools]
-node = "22.23.2"
+node = "24.20.0"
