@@ -17,7 +17,12 @@
           "device": {
             "type": "string",
             "minLength": 1,
-            "description": "The azula device to talk to, by the name it has in `azula devices`. Must already be paired with this machine."
+            "description": "The azula device to talk to, by the name it has in `azula devices`. Leave it unset to pair a phone: the account then waits for one (`openclaw channels login --channel azula` shows the invite) and saves the device here once it has paired. A device that is set must already be paired with this account's session."
+          },
+          "configWrites": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether the channel may write the device a phone paired as into this config. Turn it off to keep the config read-only: the account still serves the phone, and `channels status` shows the exact `openclaw config set` line that would save it."
           },
           "binary": {
             "type": "string",
@@ -61,6 +66,9 @@
                   "type": "string",
                   "minLength": 1
                 },
+                "configWrites": {
+                  "type": "boolean"
+                },
                 "binary": {
                   "type": "string",
                   "minLength": 1
@@ -76,10 +84,7 @@
               }
             }
           }
-        },
-        "required": [
-          "device"
-        ]
+        }
       }
     }
   },

@@ -21,7 +21,15 @@ const account: ResolvedAzulaAccount = {
 
 /** The slice of `azula mcp` the channel touches, with controllable events. */
 function fakeBridge(options: { startError?: unknown } = {}) {
-  const state = { running: false, starts: 0, stops: 0, sent: [] as string[], typing: [] as boolean[] };
+  const state = {
+    running: false,
+    starts: 0,
+    stops: 0,
+    sent: [] as string[],
+    typing: [] as boolean[],
+    devices: new Map<string, string>(),
+    device: undefined as string | undefined,
+  };
   const parked: Array<{ resolve: (e: AzulaEvent[]) => void; reject: (e: Error) => void }> = [];
   const bridge = {
     get running() {
@@ -38,6 +46,15 @@ function fakeBridge(options: { startError?: unknown } = {}) {
       for (const p of parked.splice(0)) p.reject(new McpError("stopped", "closed"));
     },
     async assertDeviceKnown() {},
+    async listDevices() {
+      return [...state.devices].map(([n, st]) => `${n}  [${n.slice(0, 8)}…]  ${st}`);
+    },
+    setDevice(device: string) {
+      state.device = device;
+    },
+    async pairingInvite() {
+      return "https://azula.app/i/live\n\n```\n▄▄ qr ▄▄\n```\n\nScan.";
+    },
     getEvents: () =>
       state.running
         ? new Promise<AzulaEvent[]>((resolve, reject) => parked.push({ resolve, reject }))
@@ -312,5 +329,207 @@ describe("stopAccount", () => {
     await gateway.stopAccount!(ctx);
     await running;
     expect(fake.state.stops).toBe(1);
+  });
+});
+
+/**
+ * An account with no `device` waits for a phone, and `openclaw channels login`
+ * reaches it through the gateway's `web.login.*` hooks. The SDK values that talk
+ * to the real config file are replaced by an in-memory config; the status
+ * patches are the SDK's own.
+ */
+describe("pairing through the gateway adapter", () => {
+  const unpaired: ResolvedAzulaAccount = { ...account, device: undefined };
+
+  async function pairingAdapter(
+    fake: ReturnType<typeof fakeBridge>,
+    options: { writesAllowed?: boolean; loginBridge?: () => AzulaBridge } = {},
+  ) {
+    const { loadSdk } = await import("./sdk.js");
+    const real = await loadSdk();
+    const config: Any = { channels: { azula: { enabled: true } } };
+    const sdk = {
+      ...real,
+      getRuntimeConfig: () => config,
+      resolveChannelConfigWrites: () => options.writesAllowed ?? true,
+      mutateConfigFile: async (params: { mutate: (draft: Any) => unknown }) => ({ result: params.mutate(config) }),
+      resolveChannelInboundRouteEnvelope: ((params: Any) => ({
+        route: { agentId: "main", sessionKey: `agent:main:azula:${params.peer.id}` },
+        buildEnvelope: (input: Any) => input.body,
+      })) as unknown as typeof real.resolveChannelInboundRouteEnvelope,
+    } as typeof real;
+    const adapter = createGatewayAdapter({
+      loadSdk: async () => sdk,
+      createBridge: () => fake.bridge,
+      lifecycle: {
+        pairingPollMs: 5,
+        stopGraceMs: 100,
+        pumpErrorBackoffMs: 1,
+        reconnect: { baseBackoffMs: 1, maxBackoffMs: 1, sleep: async () => {} },
+      },
+      login: {
+        pollMs: 5,
+        ...(options.loginBridge ? { createBridge: options.loginBridge } : {}),
+      },
+    });
+    return { adapter, config };
+  }
+
+  const pairingContext = (overrides: Partial<Ctx> = {}) =>
+    context({ account: unpaired, cfg: { channels: { azula: { enabled: true } } } as never, ...overrides });
+
+  it("publishes a waiting account as running and connected, never as unlinked", async () => {
+    const fake = fakeBridge();
+    const { adapter } = await pairingAdapter(fake);
+    const { ctx, controller, statuses } = pairingContext();
+    const running = adapter.startAccount!(ctx);
+
+    await vi.waitFor(() => expect(statuses.some((s) => s.azulaPairing === true)).toBe(true));
+    const waiting = statuses.find((s) => s.azulaPairing === true)!;
+    expect(waiting).toMatchObject({ accountId: "default", running: true, connected: true, lifecycle: "ready", lastError: null });
+    // `linked: false` would make the gateway refuse to ever start the account again.
+    for (const status of statuses) expect(status).not.toHaveProperty("linked");
+    expect(getRuntime("default")).toBeUndefined();
+
+    controller.abort();
+    await running;
+    expect(statuses.at(-1)).toMatchObject({ lifecycle: "stopped", running: false, azulaPairing: undefined });
+  });
+
+  it("goes ready on the phone that pairs, saving it, and clears the waiting fact", async () => {
+    const fake = fakeBridge();
+    const { adapter, config } = await pairingAdapter(fake);
+    const { ctx, controller, statuses } = pairingContext();
+    const running = adapter.startAccount!(ctx);
+    await vi.waitFor(() => expect(statuses.some((s) => s.azulaPairing === true)).toBe(true));
+
+    fake.state.devices.set("2a64dea5aaaa", "connected");
+    await vi.waitFor(() => expect(statuses.some((s) => s.azulaDevice === "2a64dea5aaaa")).toBe(true));
+
+    expect(statuses.at(-1)).toMatchObject({
+      running: true,
+      connected: true,
+      lifecycle: "ready",
+      azulaPairing: undefined,
+      azulaDevice: "2a64dea5aaaa",
+      azulaConfigHint: undefined,
+    });
+    expect(config.channels.azula.device).toBe("2a64dea5aaaa");
+    expect(fake.state.device).toBe("2a64dea5aaaa");
+    expect(getRuntime("default")?.bridge).toBe(fake.bridge);
+
+    controller.abort();
+    await running;
+  });
+
+  it("publishes how to save the phone when config writes are off", async () => {
+    const fake = fakeBridge();
+    const { adapter, config } = await pairingAdapter(fake, { writesAllowed: false });
+    const { ctx, controller, statuses } = pairingContext();
+    const running = adapter.startAccount!(ctx);
+    await vi.waitFor(() => expect(statuses.some((s) => s.azulaPairing === true)).toBe(true));
+
+    fake.state.devices.set("phone-x", "connected");
+    await vi.waitFor(() => expect(statuses.some((s) => s.azulaDevice === "phone-x")).toBe(true));
+
+    expect(statuses.at(-1)).toMatchObject({
+      lifecycle: "ready",
+      azulaDevice: "phone-x",
+      azulaConfigHint: "openclaw config set channels.azula.device phone-x",
+    });
+    expect(config.channels.azula.device).toBeUndefined();
+
+    controller.abort();
+    await running;
+  });
+
+  it("answers the gateway's login request from the running account, and then the wait", async () => {
+    const fake = fakeBridge();
+    const { adapter } = await pairingAdapter(fake);
+    const { ctx, controller, statuses } = pairingContext();
+    const running = adapter.startAccount!(ctx);
+    await vi.waitFor(() => expect(statuses.some((s) => s.azulaPairing === true)).toBe(true));
+
+    const started = await adapter.loginWithQrStart!({ accountId: "default" });
+    expect(started.connected).toBe(false);
+    expect(started.message).toContain("https://azula.app/i/live");
+    expect(started.message).toContain("▄▄ qr ▄▄");
+    // No `qrDataUrl`: the gateway stops a channel that answers with a QR image.
+    expect(started).not.toHaveProperty("qrDataUrl");
+
+    const waiting = adapter.loginWithQrWait!({ accountId: "default", timeoutMs: 5_000 });
+    fake.state.devices.set("phone-1", "connected");
+    await expect(waiting).resolves.toMatchObject({ connected: true });
+
+    // The account the phone paired with is the account that was running; no restart.
+    expect(fake.state.starts).toBe(1);
+
+    controller.abort();
+    await running;
+  });
+
+  it("tells a login for a running account with a phone that it has one", async () => {
+    const fake = fakeBridge();
+    const { adapter } = await pairingAdapter(fake);
+    const { ctx, controller } = context();
+    const running = adapter.startAccount!(ctx);
+    await vi.waitFor(() => expect(getRuntime("default")).toBeDefined());
+
+    const started = await adapter.loginWithQrStart!({ accountId: "default" });
+    expect(started).toMatchObject({ connected: true });
+    expect(started.message).toContain("already serves device 'phone'");
+
+    controller.abort();
+    await running;
+  });
+
+  it("opens the session itself when the account is not running, and the account takes it over afterwards", async () => {
+    const live = fakeBridge();
+    const temp = fakeBridge();
+    const { adapter, config } = await pairingAdapter(live, { loginBridge: () => temp.bridge });
+
+    // Nothing is running: the login holds the azula session on its own.
+    const started = await adapter.loginWithQrStart!({ accountId: "default" });
+    expect(started.message).toContain("https://azula.app/i/live");
+    expect(temp.state.running).toBe(true);
+
+    const waiting = adapter.loginWithQrWait!({ accountId: "default", timeoutMs: 5_000 });
+    temp.state.devices.set("fresh-phone", "connected");
+    await expect(waiting).resolves.toMatchObject({ connected: true });
+    expect(config.channels.azula.device).toBe("fresh-phone");
+    // Handed back before the gateway starts the account.
+    expect(temp.state.running).toBe(false);
+  });
+
+  it("closes a lingering login session before it starts the account, which needs the same azula session", async () => {
+    const live = fakeBridge();
+    const temp = fakeBridge();
+    const { adapter } = await pairingAdapter(live, { loginBridge: () => temp.bridge });
+    await adapter.loginWithQrStart!({ accountId: "default" });
+    expect(temp.state.running).toBe(true);
+
+    const { ctx, controller, statuses } = pairingContext();
+    const running = adapter.startAccount!(ctx);
+    await vi.waitFor(() => expect(statuses.some((s) => s.azulaPairing === true)).toBe(true));
+
+    expect(temp.state.running).toBe(false);
+    expect(live.state.running).toBe(true);
+
+    controller.abort();
+    await running;
+  });
+
+  it("clears the plugin's own facts when the account is blocked", async () => {
+    const fake = fakeBridge({
+      startError: new AzulaConfigError("the azula binary could not be run ('azula')", "install it"),
+    });
+    const { adapter } = await pairingAdapter(fake);
+    const { ctx, statuses } = pairingContext();
+    await adapter.startAccount!(ctx);
+    expect(statuses.find((s) => s.lifecycle === "blocked")).toMatchObject({
+      azulaPairing: undefined,
+      azulaDevice: undefined,
+      azulaConfigHint: undefined,
+    });
   });
 });

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   AzulaAccountError,
+  azulaSection,
+  configSetCommand,
   DEFAULT_ACCOUNT_ID,
+  deviceConfigPath,
   listAccountIds,
+  loginCommand,
   resolveAccount,
   resolveAllAccounts,
 } from "./accounts.js";
@@ -20,10 +24,27 @@ describe("resolveAccount", () => {
     });
   });
 
-  it("requires a device and says what to do about it", () => {
-    expect(() => resolveAccount({})).toThrow(AzulaAccountError);
-    expect(() => resolveAccount({})).toThrow(/device/);
+  /**
+   * No device is the pairing state, not a configuration error: the account
+   * starts, waits for a phone, and adopts it.
+   */
+  it("resolves an account with no device, which then starts in its pairing state", () => {
+    expect(resolveAccount({})).toEqual({
+      accountId: DEFAULT_ACCOUNT_ID,
+      enabled: true,
+      device: undefined,
+      binary: "azula",
+      session: "openclaw",
+      label: "OpenClaw",
+    });
+    expect(resolveAccount({ enabled: true }).device).toBeUndefined();
+    expect(resolveAccount({ device: "   " }).device).toBeUndefined();
+  });
+
+  it("still rejects a channel that is not configured at all, and says how to pair", () => {
+    expect(() => resolveAccount(undefined)).toThrow(AzulaAccountError);
     expect(() => resolveAccount(undefined)).toThrow(/not configured/);
+    expect(() => resolveAccount(undefined)).toThrow(/channels login/);
   });
 
   it("inherits unset fields from the root", () => {
@@ -94,6 +115,22 @@ describe("listAccountIds", () => {
     ]);
     expect(listAccountIds(undefined)).toEqual([]);
   });
+
+  /** An empty `channels.azula` is how a single-account operator asks for a phone to be paired. */
+  it("lists the root of a device-less single-account channel, so it can pair", () => {
+    expect(listAccountIds({})).toEqual(["default"]);
+    expect(listAccountIds({ enabled: true })).toEqual(["default"]);
+  });
+
+  /**
+   * With named accounts, a device-less root is only their shared defaults.
+   * Starting it would open a second, unwanted pairing session.
+   */
+  it("does not start a device-less root that only carries defaults for named accounts", () => {
+    expect(listAccountIds({ binary: "/opt/azula", accounts: { work: { device: "w" } } })).toEqual([
+      "work",
+    ]);
+  });
 });
 
 describe("resolveAllAccounts", () => {
@@ -120,11 +157,43 @@ describe("resolveAllAccounts", () => {
     expect(errors).toEqual([]);
   });
 
-  it("reports an account that cannot resolve at all", () => {
+  /** An account with no device is an account waiting for a phone, not a broken one. */
+  it("resolves an account with no device anywhere, to be paired", () => {
     const { accounts, errors } = resolveAllAccounts({
       accounts: { orphan: {} },
     });
-    expect(accounts).toHaveLength(0);
-    expect(errors.map((e) => e.accountId).sort()).toEqual(["default", "orphan"]);
+    expect(errors).toEqual([]);
+    expect(accounts.map((a) => [a.accountId, a.device])).toEqual([["orphan", undefined]]);
+  });
+
+  it("resolves nothing when the channel is not configured", () => {
+    expect(resolveAllAccounts(undefined)).toEqual({ accounts: [], errors: [] });
+  });
+});
+
+describe("the commands an operator is pointed at", () => {
+  it("names the login command, with --account only for a named account", () => {
+    expect(loginCommand("default")).toBe("openclaw channels login --channel azula");
+    expect(loginCommand("work")).toBe("openclaw channels login --channel azula --account work");
+  });
+
+  it("names the config path and the exact set command, quoting what needs it", () => {
+    expect(deviceConfigPath("default")).toBe("channels.azula.device");
+    expect(deviceConfigPath("work")).toBe("channels.azula.accounts.work.device");
+    expect(configSetCommand("default", "2a64dea5")).toBe(
+      "openclaw config set channels.azula.device 2a64dea5",
+    );
+    expect(configSetCommand("work", "my phone")).toBe(
+      "openclaw config set channels.azula.accounts.work.device 'my phone'",
+    );
+  });
+});
+
+describe("azulaSection", () => {
+  it("reads channels.azula without assuming the shape", () => {
+    expect(azulaSection({ channels: { azula: { device: "p" } } })).toEqual({ device: "p" });
+    expect(azulaSection({ channels: { azula: "nope" } })).toBeUndefined();
+    expect(azulaSection({})).toBeUndefined();
+    expect(azulaSection(undefined)).toBeUndefined();
   });
 });

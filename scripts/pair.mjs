@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * Pair a phone with the azula session an account of this channel will use.
+ * Pair a phone with the azula session an account of this channel will use,
+ * without a gateway. (With a gateway running, `openclaw channels login --channel
+ * azula` does this for you and saves the device; this is the offline
+ * alternative, and the only one when no gateway is up.)
  *
  * The phone has to pair with *that* session — the persistent identity the
  * channel's `azula mcp --session <name>` runs as — so this starts exactly the

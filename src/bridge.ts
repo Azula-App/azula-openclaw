@@ -9,6 +9,7 @@
  * rather than from a sibling `azula watch`.
  */
 
+import { parseDeviceLines } from "./device-list.js";
 import { AzulaMcpClient, McpError, type Logger } from "./mcp-client.js";
 import { parseAzulaEvents, type AzulaEvent } from "./events.js";
 
@@ -42,6 +43,23 @@ export class AzulaConfigError extends Error {
   /** The message an operator should see: what is wrong, then what to do. */
   get full(): string {
     return `${this.message}\n  → ${this.remedy}`;
+  }
+}
+
+/**
+ * The account's `device` names nothing this session is paired with.
+ *
+ * Distinct from the other configuration errors because its fix is the channel's
+ * own pairing affordance (`openclaw channels login`), which finishes by
+ * restarting the account on its own.
+ */
+export class DeviceNotPairedError extends AzulaConfigError {
+  constructor(readonly device: string) {
+    super(
+      `no azula device named '${device}' is paired with this machine`,
+      "pair the phone with `openclaw channels login --channel azula` (add `--account <id>` for a named account), or set the channel's `device` to a name from `azula devices`",
+    );
+    this.name = "DeviceNotPairedError";
   }
 }
 
@@ -168,11 +186,10 @@ export class AzulaBridge {
    */
   async assertDeviceKnown(): Promise<void> {
     const listed = await this.#need().callOrThrow("list_devices", {});
-    if (!listed.includes(this.opts.device)) {
-      throw new AzulaConfigError(
-        `no azula device named '${this.opts.device}' is paired with this machine`,
-        "pair the phone first (`azula pair`, or the invite from `start_pairing`), then set the channel's `device` to its name",
-      );
+    // The name column, exactly. A substring test would let `phone` be satisfied
+    // by `phone-2`, `my-phone`, or the heading's own words.
+    if (!parseDeviceLines(listed.split("\n")).has(this.opts.device)) {
+      throw new DeviceNotPairedError(this.opts.device);
     }
   }
 

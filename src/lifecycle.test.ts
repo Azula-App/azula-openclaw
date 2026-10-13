@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedAzulaAccount } from "./accounts.js";
-import { AzulaConfigError, type AzulaBridge } from "./bridge.js";
+import { AzulaConfigError, DeviceNotPairedError, type AzulaBridge } from "./bridge.js";
 import type { AzulaEvent } from "./events.js";
 import { AccountLifecycle, type AccountStatus, type LifecycleOptions } from "./lifecycle.js";
 import { McpError } from "./mcp-client.js";
@@ -56,6 +56,8 @@ function fakeBridge(
     deviceErrors?: Array<unknown>;
     /** Hold start() open until released. */
     holdStart?: Promise<void>;
+    /** Devices the session already knows when the bridge starts, name → status. */
+    devices?: Record<string, string>;
   } = {},
 ) {
   const state = {
@@ -66,7 +68,15 @@ function fakeBridge(
     typing: [] as boolean[],
     sent: [] as string[],
     deleted: [] as string[],
+    /** `assertDeviceKnown` calls: a pairing account must make none. */
+    assertCalls: 0,
+    /** Devices the session knows, name → status, as `list_devices` shows them. */
+    devices: new Map<string, string>(),
+    /** The device the bridge was retargeted at, once a phone is adopted. */
+    device: undefined as string | undefined,
+    invites: 0,
   };
+  for (const [name, status] of Object.entries(options.devices ?? {})) state.devices.set(name, status);
   const startErrors = [...(options.startErrors ?? [])];
   const deviceErrors = [...(options.deviceErrors ?? [])];
   const parked: Array<{
@@ -103,10 +113,22 @@ function fakeBridge(
       rejectParked(new McpError("azula bridge stopped", "closed"));
     },
     async assertDeviceKnown() {
+      state.assertCalls += 1;
       if (deviceErrors.length > 0) {
         const err = deviceErrors.shift();
         if (err !== undefined) throw err;
       }
+    },
+    async listDevices() {
+      if (!state.running) throw new McpError("azula bridge is not running", "closed");
+      return [...state.devices].map(([name, status]) => `${name}  [${name.slice(0, 8)}…]  ${status}`);
+    },
+    setDevice(device: string) {
+      state.device = device;
+    },
+    async pairingInvite() {
+      state.invites += 1;
+      return "https://azula.app/i/abc\n\n```\n▄▄ qr ▄▄\n```\n\nScan with your phone's camera.";
     },
     getEvents(_timeoutSeconds?: number): Promise<AzulaEvent[]> {
       state.polls += 1;
@@ -146,6 +168,10 @@ function fakeBridge(
     /** The first child's exit notification, delivered late. */
     staleExit() {
       exitCallbacks[0]?.();
+    },
+    /** A phone appearing in (or changing status in) the session's device list. */
+    pair(name: string, status = "connected") {
+      state.devices.set(name, status);
     },
     get parkedPolls() {
       return parked.length;
@@ -700,5 +726,434 @@ describe("recovery", () => {
     expect(phases(h.statuses).filter((p) => p === "recovering")).toHaveLength(1);
     h.controller.abort();
     await h.running;
+  });
+});
+
+/** An account with no `device`: it pairs instead of failing. */
+describe("pairing", () => {
+  const unpaired: ResolvedAzulaAccount = { ...account, device: undefined };
+
+  /** A pairing harness, with a fast poll and a recorded `adoptDevice`. */
+  function pairingHarness(
+    bridgeOptions: Parameters<typeof fakeBridge>[0] = {},
+    overrides: Partial<LifecycleOptions> = {},
+  ) {
+    const adopted: string[] = [];
+    const created: Array<Parameters<NonNullable<LifecycleOptions["createBridge"]>>[0]> = [];
+    const fake = fakeBridge(bridgeOptions);
+    const h = harness(bridgeOptions, {
+      account: unpaired,
+      pairingPollMs: 5,
+      adoptDevice: async (device) => {
+        adopted.push(device);
+        return { persisted: true };
+      },
+      createBridge: (options) => {
+        created.push(options);
+        return fake.bridge;
+      },
+      ...overrides,
+    });
+    // `harness` built its own fake; the one wired in through `createBridge` is
+    // the one the lifecycle drives, so hand back that one.
+    return { ...h, fake, adopted, created };
+  }
+
+  it("starts without a device and waits for a phone instead of failing", async () => {
+    const h = pairingHarness();
+    await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+    expect(phases(h.statuses)).toEqual(["starting", "pairing"]);
+    expect(h.lifecycle.phase).toBe("pairing");
+    expect(h.lifecycle.device).toBeUndefined();
+    // The bridge is up and holds the session, with no device to address yet.
+    expect(h.fake.state.running).toBe(true);
+    expect(h.created[0]?.device).toBe("");
+    // There is no device to be "known", so the unpaired-device check is skipped.
+    expect(h.fake.state.assertCalls).toBe(0);
+    expect(logs.some((l) => l.startsWith("info") && l.includes("waiting for a phone to pair"))).toBe(true);
+    expect(logs.some((l) => l.includes("openclaw channels login --channel azula"))).toBe(true);
+
+    h.controller.abort();
+    await h.running;
+  });
+
+  it("sends no agent traffic while it waits, and says why a send fails", async () => {
+    const h = pairingHarness();
+    await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Not registered, so nothing can reach a bridge with no device to address...
+    expect(getRuntime("default")).toBeUndefined();
+    expect(() => requireRuntime("default")).toThrow(/waiting for a phone to pair/);
+    expect(() => requireRuntime("default")).toThrow(/openclaw channels login --channel azula/);
+    // ...and no inbound pump is draining a device that does not exist.
+    expect(h.fake.state.polls).toBe(0);
+
+    h.controller.abort();
+    await h.running;
+  });
+
+  it("names the account in the login command it points a named account at", async () => {
+    const h = pairingHarness({}, { account: { ...unpaired, accountId: "work" } });
+    await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+    expect(logs.some((l) => l.includes("openclaw channels login --channel azula --account work"))).toBe(true);
+    h.controller.abort();
+    await h.running;
+  });
+
+  describe("adopting a phone", () => {
+    it("adopts the device that appears in the session's device list", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+      h.fake.pair("2a64dea5aaaa");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+      expect(h.adopted).toEqual(["2a64dea5aaaa"]);
+      // The bridge is retargeted, so every later send addresses the phone.
+      expect(h.fake.state.device).toBe("2a64dea5aaaa");
+      expect(h.lifecycle.device).toBe("2a64dea5aaaa");
+      expect(h.statuses.find((s) => s.phase === "ready")).toMatchObject({
+        phase: "ready",
+        device: "2a64dea5aaaa",
+        configHint: null,
+      });
+      // Now an ordinary ready account: reachable for sends, and polling for the phone.
+      expect(getRuntime("default")?.bridge).toBe(h.fake.bridge);
+      await vi.waitFor(() => expect(h.fake.parkedPolls).toBe(1));
+      // Pairing did not need a restart: one child the whole time.
+      expect(h.fake.state.starts).toBe(1);
+      expect(logs.some((l) => l.includes("paired with device '2a64dea5aaaa'"))).toBe(true);
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("delivers the adopted phone's messages to the agent, scoped to that device", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("2a64dea5aaaa");
+      await vi.waitFor(() => expect(h.fake.parkedPolls).toBe(1));
+
+      h.fake.push({ type: "message", device: "2a64dea5aaaa", text: "hello" });
+      await vi.waitFor(() => expect(h.dispatched).toHaveLength(1));
+
+      expect(h.dispatched[0]).toMatchObject({ kind: "message", text: "hello", device: "2a64dea5aaaa" });
+      // The agent is told the device through the scope: the resolved account
+      // is only the config as it was at start, and has none.
+      expect(h.scopes[0]?.device).toBe("2a64dea5aaaa");
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("ignores a phone the session already knew when pairing began", async () => {
+      const h = pairingHarness({ devices: { "already-here": "connected", "someone-elses": "offline" } });
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      await new Promise((r) => setTimeout(r, 40));
+
+      expect(h.adopted).toEqual([]);
+      expect(phases(h.statuses)).not.toContain("ready");
+      // It is offered to the operator instead of being adopted silently.
+      expect(
+        logs.some((l) => l.includes("already-here is already connected to session") && l.includes("openclaw config set channels.azula.device already-here")),
+      ).toBe(true);
+      expect((await h.lifecycle.pairingInvite()).alreadyPaired).toEqual(["already-here"]);
+
+      h.fake.pair("brand-new");
+      await vi.waitFor(() => expect(h.adopted).toEqual(["brand-new"]));
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    /**
+     * azula's device registry is the machine's: a phone that paired with another
+     * session (a second account, or `azula pair`) is listed here too, but never
+     * connected to this session.
+     */
+    it("does not adopt a phone that is only listed, because it paired with another session", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+      h.fake.pair("another-accounts-phone", "offline");
+      await new Promise((r) => setTimeout(r, 40));
+      expect(h.adopted).toEqual([]);
+      expect(phases(h.statuses)).not.toContain("ready");
+
+      // The phone that really paired with this session is connected to it.
+      h.fake.pair("my-phone", "connected");
+      await vi.waitFor(() => expect(h.adopted).toEqual(["my-phone"]));
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("adopts a known phone that was offline and has now connected", async () => {
+      const h = pairingHarness({ devices: { "old-phone": "disconnected" } });
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+      h.fake.pair("old-phone", "connected");
+      await vi.waitFor(() => expect(h.adopted).toEqual(["old-phone"]));
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("takes only one phone: a second pairing is left alone", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("first");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+      h.fake.pair("second");
+      await new Promise((r) => setTimeout(r, 40));
+
+      expect(h.adopted).toEqual(["first"]);
+      expect(h.lifecycle.device).toBe("first");
+      expect(h.fake.state.device).toBe("first");
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("keeps what the session knew across a reconnect, so a phone paired during the outage still counts", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+      h.fake.crash();
+      h.fake.pair("paired-during-outage");
+      await vi.waitFor(() => expect(h.adopted).toEqual(["paired-during-outage"]));
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("goes back to waiting, not to ready, after the bridge is re-established", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+      h.fake.crash();
+      await vi.waitFor(() => expect(phases(h.statuses)).toEqual(["starting", "pairing", "recovering", "pairing"]));
+      // Recovered without a device: it must still check nothing it cannot.
+      expect(h.fake.state.assertCalls).toBe(0);
+      expect(phases(h.statuses)).not.toContain("ready");
+
+      h.controller.abort();
+      await h.running;
+    });
+  });
+
+  describe("remembering the phone", () => {
+    it("asks for it to be saved, and publishes no hint when it was", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("phone-1");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+      expect(h.adopted).toEqual(["phone-1"]);
+      expect(h.statuses.find((s) => s.phase === "ready")?.configHint).toBeNull();
+      expect(logs.some((l) => l.includes("saved device 'phone-1'"))).toBe(true);
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("serves the phone anyway, and says how to save it, when it could not be saved", async () => {
+      const h = pairingHarness(
+        {},
+        { adoptDevice: async () => ({ persisted: false, configHint: "openclaw config set channels.azula.device phone-1" }) },
+      );
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("phone-1");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+      expect(h.statuses.find((s) => s.phase === "ready")).toMatchObject({
+        device: "phone-1",
+        configHint: "openclaw config set channels.azula.device phone-1",
+      });
+      expect(getRuntime("default")).toBeDefined();
+      expect(
+        logs.some((l) => l.startsWith("warn") && l.includes("not saved in the config") && l.includes("openclaw config set channels.azula.device phone-1")),
+      ).toBe(true);
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("falls back to the exact set line when saving throws, and still goes ready", async () => {
+      const h = pairingHarness(
+        {},
+        {
+          account: { ...unpaired, accountId: "work" },
+          adoptDevice: async () => {
+            throw new Error("config is locked");
+          },
+        },
+      );
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("phone-w");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+      expect(h.statuses.find((s) => s.phase === "ready")?.configHint).toBe(
+        "openclaw config set channels.azula.accounts.work.device phone-w",
+      );
+      expect(logs.some((l) => l.includes("config is locked"))).toBe(true);
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("with no way to save at all, shows the set line rather than pretending", async () => {
+      const h = pairingHarness({}, { adoptDevice: undefined as never });
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("phone-1");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+      expect(h.statuses.find((s) => s.phase === "ready")?.configHint).toBe(
+        "openclaw config set channels.azula.device phone-1",
+      );
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("keeps publishing the hint when the account recovers, until the device is saved", async () => {
+      const h = pairingHarness({}, { adoptDevice: async () => ({ persisted: false, configHint: "SAVE-ME" }) });
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("phone-1");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+      h.fake.crash();
+      await vi.waitFor(() => expect(phases(h.statuses).filter((p) => p === "ready")).toHaveLength(2));
+      expect(h.statuses.filter((s) => s.phase === "ready").map((s) => s.configHint)).toEqual(["SAVE-ME", "SAVE-ME"]);
+      // A device that is adopted is checked on reconnect like any configured one.
+      expect(h.fake.state.assertCalls).toBe(1);
+
+      h.controller.abort();
+      await h.running;
+    });
+  });
+
+  describe("the invite", () => {
+    it("mints azula's own invite from the account's bridge while it waits", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+      const { invite, alreadyPaired } = await h.lifecycle.pairingInvite();
+
+      expect(invite).toContain("https://azula.app/i/abc");
+      expect(alreadyPaired).toEqual([]);
+      expect(h.fake.state.invites).toBe(1);
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("refuses once the account has a phone, naming it", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      h.fake.pair("phone-1");
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+      await expect(h.lifecycle.pairingInvite()).rejects.toThrow(/already serves device 'phone-1'/);
+      expect(h.fake.state.invites).toBe(0);
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("lets a caller wait for the adoption, and hands them the outcome", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+      const waiting = h.lifecycle.waitForAdoption(5_000);
+      h.fake.pair("phone-1");
+
+      await expect(waiting).resolves.toEqual({ device: "phone-1", persisted: true });
+      // Later callers get the same answer rather than waiting forever.
+      await expect(h.lifecycle.waitForAdoption(5_000)).resolves.toMatchObject({ device: "phone-1" });
+
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("gives up waiting when no phone pairs in time", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      await expect(h.lifecycle.waitForAdoption(20)).resolves.toBeNull();
+      h.controller.abort();
+      await h.running;
+    });
+
+    it("releases a waiter when the account stops, rather than leaving it hanging", async () => {
+      const h = pairingHarness();
+      await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+      const waiting = h.lifecycle.waitForAdoption(60_000);
+      h.controller.abort();
+      await h.running;
+      await expect(waiting).resolves.toBeNull();
+    });
+  });
+
+  it("stops promptly while waiting, and leaves no bridge behind", async () => {
+    const h = pairingHarness();
+    await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+
+    const started = Date.now();
+    h.controller.abort();
+    await h.running;
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(h.fake.state.running).toBe(false);
+    expect(phases(h.statuses).at(-1)).toBe("stopped");
+    expect(getRuntime("default")).toBeUndefined();
+  });
+
+  it("does not adopt a phone that appears after the account has stopped", async () => {
+    const h = pairingHarness();
+    await vi.waitFor(() => expect(phases(h.statuses)).toContain("pairing"));
+    h.controller.abort();
+    await h.running;
+    h.fake.pair("too-late");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.adopted).toEqual([]);
+  });
+});
+
+/**
+ * A configured `device` the session is not paired with is still terminal, but
+ * its fix is now the channel's own login rather than a hand-edit.
+ */
+describe("a configured device that is not paired", () => {
+  it("blocks with a fix that points at the login command, and does not ask for a restart", async () => {
+    const h = harness({ deviceErrors: [new DeviceNotPairedError("phone")] });
+    await expect(h.running).resolves.toBeUndefined();
+
+    const blocked = h.statuses.find((s) => s.phase === "blocked");
+    expect(blocked?.error).toContain("no azula device named 'phone' is paired");
+    expect(blocked?.error).toContain("`openclaw channels login --channel azula`");
+    expect(blocked?.error).toContain("`channels.azula.device`");
+    // Login restarts the account itself; asking for a restart as well would contradict it.
+    expect(blocked?.error).toContain("starts by itself");
+    expect(blocked?.error).not.toMatch(/then restart/);
+    expect(getRuntime("default")).toBeUndefined();
+    expect(h.fake.state.running).toBe(false);
+  });
+
+  it("names the account for a named one", async () => {
+    const h = harness(
+      { deviceErrors: [new DeviceNotPairedError("work-phone")] },
+      { account: { ...account, accountId: "work", device: "work-phone" } },
+    );
+    await expect(h.running).resolves.toBeUndefined();
+    const error = h.statuses.find((s) => s.phase === "blocked")?.error;
+    expect(error).toContain("openclaw channels login --channel azula --account work");
+    expect(error).toContain("channels.azula.accounts.work.device");
+  });
+
+  it("keeps the old advice for every other configuration problem", async () => {
+    const h = harness({ startErrors: [new AzulaConfigError("the azula binary could not be run", "install it")] });
+    await expect(h.running).resolves.toBeUndefined();
+    expect(h.statuses.find((s) => s.phase === "blocked")?.error).toMatch(/then restart the azula channel/);
   });
 });

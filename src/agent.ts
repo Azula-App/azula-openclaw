@@ -104,9 +104,15 @@ function bodyFor(item: Parameters<AgentDispatch>[0]): string {
 export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatch {
   const { account, channel, sdk, logger } = options;
   const now = options.now ?? Date.now;
-  const target = `${CHANNEL_ID}:${account.device}`;
 
   return async (item, scope) => {
+    // The device is the lifecycle's to say: an account that started without one
+    // learns it when a phone pairs, and `account` is only the config at start.
+    const device = scope.device ?? account.device;
+    if (device === undefined) {
+      throw new Error("azula: an inbound item arrived before any phone was paired");
+    }
+    const target = `${CHANNEL_ID}:${device}`;
     const cfg = options.readConfig();
     const rawBody = bodyFor(item);
     const media = item.kind === "message" ? item.media : [];
@@ -115,7 +121,7 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
       return;
     }
 
-    const peer = { kind: "direct" as const, id: account.device };
+    const peer = { kind: "direct" as const, id: device };
     const { route, buildEnvelope } = sdk.resolveChannelInboundRouteEnvelope({
       cfg,
       channel: CHANNEL_ID,
@@ -135,8 +141,8 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
       accountId: account.accountId,
       cfg,
       identity: { key: "azula-device", entryIdPrefix: "azula-device" },
-      subject: { stableId: account.device },
-      conversation: { kind: "direct", id: account.device },
+      subject: { stableId: device },
+      conversation: { kind: "direct", id: device },
       contextBinding: {
         agentId: route.agentId,
         sessionKey: route.sessionKey,
@@ -146,7 +152,7 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
       // azula only ever delivers events from the paired device this account
       // names, so the device is the allowlist.
       dmPolicy: "allowlist",
-      allowFrom: [account.device],
+      allowFrom: [device],
       ...(hasControlCommand
         ? { command: { allowTextCommands: true, hasControlCommand: true } }
         : {}),
@@ -154,7 +160,7 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
 
     if (ingress.ingress.admission !== "dispatch") {
       logger.warn(
-        `azula: the gateway declined an inbound item from '${account.device}' (${ingress.ingress.admission})`,
+        `azula: the gateway declined an inbound item from '${device}' (${ingress.ingress.admission})`,
       );
       return;
     }
@@ -193,11 +199,11 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
       messageIdFull: messageId,
       timestamp,
       from: target,
-      sender: { id: account.device, name: account.device },
+      sender: { id: device, name: device },
       conversation: {
         kind: "direct",
-        id: account.device,
-        label: account.device,
+        id: device,
+        label: device,
         routePeer: peer,
       },
       route: {
@@ -217,7 +223,7 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
       message: {
         body: buildEnvelope({
           channel: "azula",
-          from: account.device,
+          from: device,
           timestamp,
           body,
         }),

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AzulaBridge, AzulaConfigError, REQUIRED_TOOLS } from "./bridge.js";
+import { AzulaBridge, AzulaConfigError, DeviceNotPairedError, REQUIRED_TOOLS } from "./bridge.js";
 import { extractToolNames } from "./mcp-client.js";
 
 const quietLogger = {
@@ -112,6 +112,47 @@ describe.runIf(haveAzula)("against a real azula bridge", () => {
       expect(err).toBeInstanceOf(AzulaConfigError);
       expect(err.message).toContain("definitely-not-a-paired-device");
       expect(err.remedy).toContain("pair");
+    } finally {
+      await bridge.stop();
+    }
+  }, 60_000);
+
+  it("finds a configured device paired under exactly that name", async () => {
+    // The scratch registry's `phone`, seeded by beforeEach.
+    const bridge = bridgeFor("phone");
+
+    await bridge.start();
+    try {
+      await expect(bridge.assertDeviceKnown()).resolves.toBeUndefined();
+    } finally {
+      await bridge.stop();
+    }
+  }, 60_000);
+
+  it("is not satisfied by registry rows that merely contain the configured name", async () => {
+    // Replace the seeded registry (in this test's own scratch HOME) with rows
+    // that contain `phone` without being it. The second key is RFC 8032's test
+    // vector 2: a valid endpoint id with nothing serving it.
+    writeFileSync(
+      join(home, ".azula", "devices.json"),
+      JSON.stringify({
+        devices: [
+          { ...UNREACHABLE_PHONE, name: "phone-2" },
+          {
+            name: "my-phone",
+            ticket: "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+            added_at: 1,
+          },
+        ],
+      }),
+    );
+    const bridge = bridgeFor("phone");
+
+    await bridge.start();
+    try {
+      const err = await bridge.assertDeviceKnown().catch((e) => e);
+      expect(err).toBeInstanceOf(DeviceNotPairedError);
+      expect(err.message).toContain("no azula device named 'phone'");
     } finally {
       await bridge.stop();
     }

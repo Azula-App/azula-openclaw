@@ -17,13 +17,19 @@
  *  - Anything else that stops the bridge coming up makes `startAccount` throw.
  *    The gateway's restart policy then retries on its own, much slower, schedule
  *    and shows the error as the account's health.
+ *
+ * The same adapter answers the gateway's `web.login.*` requests
+ * (`loginWithQrStart` / `loginWithQrWait`) — the gateway half of
+ * `openclaw channels login`; see `login.ts`.
  */
 
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
+import { persistDevice } from "./adopt.js";
 import type { ResolvedAzulaAccount } from "./accounts.js";
 import { createAgentDispatch, type ChannelRuntime } from "./agent.js";
 import { AccountLifecycle, type AccountStatus, type LifecycleOptions } from "./lifecycle.js";
+import { LoginCoordinator, type LoginDeps } from "./login.js";
 import type { Logger } from "./mcp-client.js";
 import { loadSdk, type Sdk } from "./sdk.js";
 
@@ -39,8 +45,10 @@ export type GatewayDeps = {
   /** Test seam: timings. */
   lifecycle?: Pick<
     LifecycleOptions,
-    "pollTimeoutSeconds" | "pumpErrorBackoffMs" | "reconnect" | "stopGraceMs"
+    "pollTimeoutSeconds" | "pumpErrorBackoffMs" | "reconnect" | "stopGraceMs" | "pairingPollMs"
   >;
+  /** Test seam: the temporary pairing session `loginWithQrStart` opens for a stopped account. */
+  login?: Pick<LoginDeps, "createBridge" | "sessionTtlMs" | "pollMs" | "sleep">;
 };
 
 /**
@@ -81,13 +89,33 @@ function toSnapshot(sdk: Sdk, accountId: string, status: AccountStatus): StatusP
   };
   const patch = (fields: object) => ({ ...base, ...fields }) as StatusPatch;
 
+  // The plugin's own facts (see status.ts). They describe one run of the
+  // account, so every transition that ends or restarts it clears them.
+  const noFacts = { azulaPairing: undefined, azulaDevice: undefined, azulaConfigHint: undefined };
+
   if (status.phase === undefined) return patch({});
 
   switch (status.phase) {
     case "starting":
-      return patch({ running: true, lifecycle: "starting" });
+      return patch({ running: true, lifecycle: "starting", ...noFacts });
+    case "pairing":
+      // Up, with the bridge connected, but with no phone to talk to yet.
+      //
+      // Deliberately NOT `linked: false`. That is the gateway's word for "needs
+      // the operator to log in", and it would fit; but the gateway also reads a
+      // runtime `linked: false` as a reason never to start the account again, so
+      // an account that stopped while waiting (a login, a reload) could not be
+      // restarted until the whole gateway was. The wait is shown through
+      // `collectStatusIssues` instead.
+      return patch({ ...sdk.channelReadyPatch(), ...noFacts, azulaPairing: true });
     case "ready":
-      return patch(sdk.channelReadyPatch());
+      return patch({
+        ...sdk.channelReadyPatch(),
+        ...noFacts,
+        // Present only while an adopted device is unsaved.
+        azulaConfigHint: status.configHint ?? undefined,
+        ...(status.device === undefined ? {} : { azulaDevice: status.device }),
+      });
     case "recovering":
       // `connected: false` is what the health monitor reads as an outage; it
       // gives a recovering account a grace window before intervening.
@@ -102,14 +130,30 @@ function toSnapshot(sdk: Sdk, accountId: string, status: AccountStatus): StatusP
         ...sdk.channelBlockedPatch(status.error ?? "azula channel is blocked"),
         running: false,
         connected: false,
+        ...noFacts,
       });
     case "stopped":
-      return patch(sdk.channelStoppedPatch());
+      return patch({ ...sdk.channelStoppedPatch(), ...noFacts });
   }
 }
 
 export function createGatewayAdapter(deps: GatewayDeps = {}): AzulaGateway {
   const live = new Map<string, AccountLifecycle>();
+
+  // The login RPCs carry no gateway context, so they log through whichever
+  // account last started.
+  let lastLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+  const login = new LoginCoordinator({
+    live,
+    loadSdk: deps.loadSdk ?? loadSdk,
+    logger: {
+      debug: (m) => lastLogger.debug(m),
+      info: (m) => lastLogger.info(m),
+      warn: (m) => lastLogger.warn(m),
+      error: (m) => lastLogger.error(m),
+    },
+    ...deps.login,
+  });
 
   return {
     startAccount: async (ctx) => {
@@ -122,11 +166,17 @@ export function createGatewayAdapter(deps: GatewayDeps = {}): AzulaGateway {
 
       const sdk = await (deps.loadSdk ?? loadSdk)();
       const logger = loggerFor(ctx);
+      lastLogger = logger;
       const { account, accountId } = ctx;
+
+      // A pairing session held open for `channels login` owns the azula session;
+      // the account is about to need it.
+      await login.release(accountId);
 
       const lifecycle = new AccountLifecycle({
         account,
         logger,
+        adoptDevice: (device) => persistDevice({ sdk, accountId, device, logger }),
         dispatch: createAgentDispatch({
           readConfig: sdk.createRuntimeConfigReader(ctx.cfg),
           account,
@@ -162,5 +212,12 @@ export function createGatewayAdapter(deps: GatewayDeps = {}): AzulaGateway {
     stopAccount: async (ctx) => {
       await live.get(ctx.accountId)?.stop();
     },
+
+    // `web.login.start` / `web.login.wait`: the gateway half of
+    // `openclaw channels login`. See login.ts.
+    loginWithQrStart: (params) =>
+      login.start({ accountId: params.accountId, force: params.force }),
+    loginWithQrWait: (params) =>
+      login.wait({ accountId: params.accountId, timeoutMs: params.timeoutMs }),
   };
 }

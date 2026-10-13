@@ -12,11 +12,13 @@
  */
 
 export async function loadSdk() {
-  const [gateway, inbound, dedupe, config] = await Promise.all([
+  const [gateway, inbound, dedupe, config, mutation, configHelpers] = await Promise.all([
     import("openclaw/plugin-sdk/gateway-runtime"),
     import("openclaw/plugin-sdk/channel-inbound"),
     import("openclaw/plugin-sdk/persistent-dedupe"),
     import("openclaw/plugin-sdk/runtime-config-snapshot"),
+    import("openclaw/plugin-sdk/config-mutation"),
+    import("openclaw/plugin-sdk/channel-config-helpers"),
   ]);
 
   return {
@@ -39,6 +41,16 @@ export async function loadSdk() {
     // A long-lived monitor must not decide every future turn from the config it
     // was started with: routing and bindings change while it runs.
     createRuntimeConfigReader: config.createRuntimeConfigReader,
+
+    // Remembering the phone that paired. The login RPCs carry no config, so the
+    // gateway's current snapshot is read directly for them.
+    getRuntimeConfig: config.getRuntimeConfig,
+    // The supported way for a plugin to write config: transactional, and it
+    // refreshes the gateway's own snapshot.
+    mutateConfigFile: mutation.mutateConfigFile,
+    // The operator's switch for channel-initiated config writes
+    // (`channels.azula.configWrites`), which every channel honours.
+    resolveChannelConfigWrites: configHelpers.resolveChannelConfigWrites,
   };
 }
 
