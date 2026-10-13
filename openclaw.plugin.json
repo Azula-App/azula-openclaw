@@ -1,7 +1,7 @@
 {
   "id": "azula",
   "name": "azula",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Reach your OpenClaw bot from your phone over azula's end-to-end iroh transport, instead of through a third-party messenger.",
   "channelConfigs": {
     "azula": {

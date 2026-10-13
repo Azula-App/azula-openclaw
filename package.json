@@ -1,6 +1,6 @@
 {
   "name": "@azula-app/openclaw",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Drive an OpenClaw bot from your phone over azula — an OpenClaw channel plugin that speaks to the azula MCP bridge.",
   "type": "module",
   "license": "MIT",
