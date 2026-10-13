@@ -7,13 +7,16 @@
  */
 
 import { statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import type { AzulaBridge } from "./bridge.js";
 import { CHANNEL_ID } from "./channel-id.js";
+import { isRemoteUrl, linkNote, resolveMedia } from "./media.js";
 import {
   assertSendableSize,
   nextMessageId,
   requireRuntime,
 } from "./runtime.js";
+
+export { localPathFor } from "./media.js";
 
 /** The subset of the outbound context these hooks actually read. */
 export type OutboundCtx = {
@@ -39,11 +42,37 @@ export async function sendText(ctx: OutboundCtx): Promise<{ messageId: string }>
 }
 
 /**
- * Send an attachment.
+ * Send a local file, refusing an unreadable or oversized one up front.
  *
  * The size check happens here, before any transfer frames are written, so an
  * oversized file fails with a message naming the limit rather than part-way
  * through a chunked transfer.
+ */
+export async function sendLocalFile(
+  bridge: Pick<AzulaBridge, "sendFile">,
+  path: string,
+  caption?: string,
+): Promise<void> {
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch (err) {
+    throw new Error(`could not read '${path}': ${(err as Error).message}`);
+  }
+  assertSendableSize(size, path);
+
+  const trimmed = caption?.trim();
+  await bridge.sendFile(path, trimmed ? trimmed : undefined);
+}
+
+/**
+ * Send an attachment.
+ *
+ * A remote (http/https) URL is fetched through the gateway's guarded loader and
+ * the local copy sent. The caption of a remote attachment goes out first as a
+ * message of its own, before the fetch, so a slow or failing host never holds
+ * the words back; when the file cannot be fetched, its link follows as a short
+ * message. (A local file keeps its caption: there is nothing to wait for.)
  */
 export async function sendMedia(ctx: OutboundCtx): Promise<{ messageId: string }> {
   const runtime = requireRuntime(ctx.accountId);
@@ -55,45 +84,26 @@ export async function sendMedia(ctx: OutboundCtx): Promise<{ messageId: string }
     return sendText(ctx);
   }
 
-  const path = localPathFor(mediaUrl);
-  if (!path) {
-    throw new Error(
-      `azula can only attach local files; '${mediaUrl}' is not a local path`,
-    );
-  }
-
-  let size = 0;
-  try {
-    size = statSync(path).size;
-  } catch (err) {
-    throw new Error(`could not read '${path}': ${(err as Error).message}`);
-  }
-  assertSendableSize(size, path);
-
   const caption = ctx.text?.trim();
-  await runtime.bridge.sendFile(path, caption ? caption : undefined);
-  return { messageId: nextMessageId(CHANNEL_ID) };
-}
+  const remote = isRemoteUrl(mediaUrl);
+  if (remote && caption) await runtime.bridge.sendMessage(caption);
 
-/**
- * Resolve an outbound media reference to a local path.
- *
- * azula's `send_file` reads from the machine running the bridge, so a remote
- * URL cannot be attached — and the A2UI `Image` component deliberately will
- * not fetch one either. Returning `null` lets the caller say so plainly.
- */
-export function localPathFor(mediaUrl: string): string | null {
-  if (mediaUrl.startsWith("file://")) {
-    try {
-      return fileURLToPath(mediaUrl);
-    } catch {
-      return null;
-    }
+  const media = await resolveMedia(mediaUrl, {
+    fetchMedia: runtime.fetchMedia,
+    logger: runtime.logger,
+  });
+
+  switch (media.kind) {
+    case "file":
+      await sendLocalFile(runtime.bridge, media.path, remote ? undefined : caption);
+      break;
+    case "link":
+      await runtime.bridge.sendMessage(linkNote(media.url));
+      break;
+    case "unsupported":
+      // Say what the sentence was before refusing the attachment.
+      if (caption) await runtime.bridge.sendMessage(caption);
+      throw new Error(media.reason);
   }
-  // Any other scheme is not something send_file can read. The scheme must be
-  // two or more characters so a Windows drive letter (`C:\\...`) is still
-  // treated as the local path it is. `data:` has no `//`, so matching on
-  // `://` alone would let a data URI through and fail later as a missing file.
-  if (/^[a-z][a-z0-9+.-]+:/i.test(mediaUrl)) return null;
-  return mediaUrl;
+  return { messageId: nextMessageId(CHANNEL_ID) };
 }

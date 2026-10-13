@@ -14,9 +14,10 @@
  *     allowlist — it is how the host learns who the sender is, and what a
  *     slash command from them may do.
  *  3. Build the inbound context (text, attachments as local paths, sender).
- *  4. Dispatch. Replies come back through `deliver`, which is this channel's
- *     own outbound (`sendText` / `sendMedia`), so a reply and a proactive send
- *     take one path to the phone.
+ *  4. Dispatch. Replies come back through `deliver`, which hands every payload
+ *     (streamed block or final) to `deliverReply`, the same function the
+ *     outbound `sendPayload` uses, so a reply and a proactive send are rendered
+ *     one way: text first, then attachments, then buttons as a surface.
  */
 
 import { readFile } from "node:fs/promises";
@@ -27,7 +28,8 @@ import { CHANNEL_ID } from "./channel-id.js";
 import type { InboundMedia } from "./inbound.js";
 import type { AgentDispatch } from "./lifecycle.js";
 import type { Logger } from "./mcp-client.js";
-import { sendMedia, sendText } from "./outbound.js";
+import { remoteMediaFetcher } from "./media.js";
+import { commandTextDetector, deliverReply } from "./reply.js";
 import { nextMessageId } from "./runtime.js";
 import type { Sdk } from "./sdk.js";
 
@@ -104,6 +106,7 @@ function bodyFor(item: Parameters<AgentDispatch>[0]): string {
 export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatch {
   const { account, channel, sdk, logger } = options;
   const now = options.now ?? Date.now;
+  const fetchMedia = remoteMediaFetcher(channel);
 
   return async (item, scope) => {
     // The device is the lifecycle's to say: an account that started without one
@@ -114,6 +117,8 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
     }
     const target = `${CHANNEL_ID}:${device}`;
     const cfg = options.readConfig();
+    // What the gateway would run as a command, judged against this turn's config.
+    const isCommandText = commandTextDetector(channel, () => cfg);
     const rawBody = bodyFor(item);
     const media = item.kind === "message" ? item.media : [];
     if (rawBody.trim() === "" && media.length === 0) {
@@ -252,32 +257,17 @@ export function createAgentDispatch(options: AgentDispatchOptions): AgentDispatc
             logger.warn(`azula: recording the inbound session failed: ${String(err)}`),
         },
         delivery: {
+          // Called for every streamed block and for the final reply alike; a
+          // reply is rendered the same way whichever it is.
           deliver: async (payload) => {
             // Reasoning and commentary are the agent thinking out loud, not a
             // reply; they belong in a debug view, not the phone's chat.
             if (payload.isReasoning === true) return;
 
-            const urls = payload.mediaUrls?.length
-              ? payload.mediaUrls
-              : payload.mediaUrl
-                ? [payload.mediaUrl]
-                : [];
-            const text = payload.text ?? "";
-            const out = { accountId: account.accountId } as const;
-
-            if (urls.length === 0) {
-              if (text.trim() !== "") await sendText({ ...out, text });
-              return;
-            }
-            // The first attachment carries the text as its caption, so a reply
-            // that is a picture plus a sentence arrives as one thing.
-            for (const [index, mediaUrl] of urls.entries()) {
-              await sendMedia({
-                ...out,
-                mediaUrl,
-                ...(index === 0 && text.trim() !== "" ? { text } : {}),
-              });
-            }
+            await deliverReply(
+              { bridge: scope.bridge, surfaces: scope.surfaces, logger, fetchMedia, isCommandText },
+              payload,
+            );
           },
           onError: (err, info) =>
             logger.warn(`azula: delivering a ${info.kind} reply failed: ${String(err)}`),

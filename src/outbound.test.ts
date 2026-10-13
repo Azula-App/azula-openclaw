@@ -15,7 +15,10 @@ import { SurfaceTracker } from "./surfaces.js";
 
 type Sent = { kind: "text"; text: string } | { kind: "file"; path: string; caption?: string };
 
-function fakeRuntime(accountId = "default") {
+function fakeRuntime(
+  accountId = "default",
+  extra: { fetchMedia?: (url: string) => Promise<{ path: string }> } = {},
+) {
   const sent: Sent[] = [];
   const bridge = {
     sendMessage: async (text: string) => void sent.push({ kind: "text", text }),
@@ -25,6 +28,7 @@ function fakeRuntime(accountId = "default") {
   registerRuntime(accountId, {
     bridge: bridge as never,
     surfaces: new SurfaceTracker(),
+    ...extra,
   });
   return sent;
 }
@@ -83,13 +87,66 @@ describe("sendMedia", () => {
 
   /**
    * azula's send_file reads from the machine running the bridge, so a remote
-   * URL cannot be attached — and A2UI deliberately will not fetch one either.
+   * URL is fetched first. With nothing to fetch it, the caption must not be
+   * lost with it: the link goes out as text.
    */
-  it("refuses a remote URL rather than pretending to fetch it", async () => {
-    fakeRuntime();
+  it("sends the caption, then the link as its own message, when there is no way to fetch a remote URL", async () => {
+    const sent = fakeRuntime();
+    await sendMedia({ mediaUrl: "https://example.com/a.png", text: "look" });
+    expect(sent).toEqual([
+      { kind: "text", text: "look" },
+      { kind: "text", text: "Image: https://example.com/a.png" },
+    ]);
+  });
+
+  it("sends just the link when a remote URL has no caption and cannot be fetched", async () => {
+    const sent = fakeRuntime();
+    await sendMedia({ mediaUrl: "https://example.com/report.pdf" });
+    expect(sent).toEqual([{ kind: "text", text: "Attachment: https://example.com/report.pdf" }]);
+  });
+
+  it("sends the caption before fetching a remote URL, then the local copy", async () => {
+    const file = join(dir, "fetched.png");
+    writeFileSync(file, "png");
+    const asked: string[] = [];
+    const seenWhenAsked: number[] = [];
+    let sentRef: Sent[] = [];
+    sentRef = fakeRuntime("default", {
+      fetchMedia: async (url) => {
+        asked.push(url);
+        // What had already reached the phone when the fetch began.
+        seenWhenAsked.push(sentRef.length);
+        return { path: file };
+      },
+    });
+    await sendMedia({ mediaUrl: "https://example.com/a.png?x=1", text: "look" });
+    expect(asked).toEqual(["https://example.com/a.png?x=1"]);
+    expect(seenWhenAsked).toEqual([1]);
+    expect(sentRef).toEqual([
+      { kind: "text", text: "look" },
+      { kind: "file", path: file },
+    ]);
+  });
+
+  it("falls back to the link, not an error, when the fetch fails", async () => {
+    const sent = fakeRuntime("default", {
+      fetchMedia: async () => {
+        throw new Error("blocked");
+      },
+    });
+    await sendMedia({ mediaUrl: "https://example.com/a.png", text: "look" });
+    expect(sent).toEqual([
+      { kind: "text", text: "look" },
+      { kind: "text", text: "Image: https://example.com/a.png" },
+    ]);
+  });
+
+  it("says what the caption was, then refuses, for a reference no path can carry", async () => {
+    const sent = fakeRuntime();
     await expect(
-      sendMedia({ mediaUrl: "https://example.com/a.png" }),
+      sendMedia({ mediaUrl: "data:image/png;base64,AAAA", text: "inline" }),
     ).rejects.toThrow(/only attach local files/);
+    expect(sent).toEqual([{ kind: "text", text: "inline" }]);
   });
 
   it("falls back to text when the payload has no media", async () => {

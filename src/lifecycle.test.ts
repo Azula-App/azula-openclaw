@@ -241,6 +241,23 @@ describe("start", () => {
     await h.running;
   });
 
+  /**
+   * Sends that happen outside a turn (`message send`, cron) reach a bridge only
+   * through this registry, so it is also where they find the logger and the
+   * remote-media loader.
+   */
+  it("hands the outbound path its logger and remote-media loader", async () => {
+    const fetchMedia = async () => ({ path: "/media/x.png" });
+    const h = harness({}, { fetchMedia });
+    await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));
+
+    expect(getRuntime("default")?.fetchMedia).toBe(fetchMedia);
+    expect(getRuntime("default")?.logger).toBe(logger);
+
+    h.controller.abort();
+    await h.running;
+  });
+
   it("reports starting before ready", async () => {
     const h = harness();
     await vi.waitFor(() => expect(phases(h.statuses)).toContain("ready"));

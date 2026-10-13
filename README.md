@@ -12,11 +12,55 @@ chat channel, alongside WhatsApp, Telegram and the rest.
 
 - **Text both ways** — the agent's replies arrive as chat; your replies wake it.
 - **Attachments** — files in either direction, up to azula's 64 MiB inline cap.
-- **Real controls** — when the agent offers a discrete set of choices, they
-  render as actual buttons on the phone rather than "reply 1, 2 or 3". A tap
-  comes back as that message's answer. Every surface ships with a text
-  fallback, so the conversation still reads correctly in history.
+  An image the agent links to is fetched and sent as a file; if it can't be
+  fetched, its link follows as a short message of its own.
+- **Real controls** — when the agent offers buttons or a menu, they render as
+  actual buttons on the phone rather than "reply 1, 2 or 3". A tap comes back as
+  that message's answer. Every set of buttons ships with a message that says the
+  same thing in text, so the conversation still reads correctly in history.
 - **A thinking indicator** during long turns, so the bot doesn't look dead.
+
+## What the bot can send
+
+OpenClaw lets an agent describe a rich reply once (a title, paragraphs, small
+context lines, dividers, tables, charts, buttons, menus) and leaves each channel
+to show what it can. On azula:
+
+| The reply has | What the phone gets |
+| --- | --- |
+| Text, a title, context lines | One chat message. |
+| A table or chart | The same message, as a plain list (the channel doesn't declare native tables or charts, so OpenClaw flattens them). |
+| Buttons or a menu | The message, then a card of **tappable buttons** under it. |
+| A link button | `label: url` in the message. A button can't open a link, so it isn't a button. |
+| A location | A `Location: name, address (lat, lon)` line. |
+| An image or file | The message first, then the attachment. A remote image is fetched through OpenClaw's guarded loader and sent as a file; if it can't be fetched, `Image: <url>` (or `Attachment: <url>`) follows instead. |
+
+The message always goes first, as a message of its own, and never waits on an
+attachment: remote files are fetched while it is being sent, and delivered
+afterwards in the order the agent gave them. A card that can't be shown, or an
+attachment that can't be fetched or is over the cap, never takes the text with
+it: the message is already there, the failure is logged, and a failed attachment
+gets a short note on the phone.
+
+What a tap answers with is the text the agent would have received had you typed
+it: a button's callback value, a command button's command (run as the slash
+command it is), or, for an `ask_user` question, the option's label. A button's
+value is invisible, so one the gateway would take for a command is never made
+into a button, because it would run on a tap that only says "Show more": a
+slash command (`/reset`), the `!` host-shell shortcut (`! ls`; it only does
+anything if you have turned on `commands.bash`), a bare abort word like `stop`,
+or a command token inside other text. The control stays in the message. Only a
+command button can answer with a command, and its command is shown in the message. The card is
+removed when you answer or send anything else. Twelve buttons and 60-character
+labels are the most a card carries; anything over is listed in the message.
+
+Nothing is dropped silently. A reply with nothing azula can show (say, content
+only some other channel understands) is logged as a warning that names which
+parts it had, without their content.
+
+The agent is told all this: azula declares the `presentation` parameter of the
+`message` tool and the `inlineButtons` capability, so `message send` with
+`presentation`, cron announcements and the agent's own replies take the same path.
 
 ## Requirements
 
@@ -42,7 +86,10 @@ Then restart the gateway so it loads.
 plugin registers and asks you to consent to them; this one registers **a single
 chat channel (`azula`) and nothing else** — no providers, tools, hooks, MCP
 servers, CLI commands, skills, or dangerous config flags. Its manifest declares
-exactly that, so what you are shown is what you get.
+exactly that, so what you are shown is what you get. (The channel also tells
+OpenClaw it can render `presentation` buttons, which adds that one parameter to
+the agent's existing `message` tool for this channel. That is a property of the
+channel, not another tool or surface.)
 
 `--force` acknowledges a second, separate warning: this package is not in
 ClawHub, OpenClaw's reviewed plugin index, so the gateway asks you to confirm

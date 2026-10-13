@@ -12,6 +12,8 @@ import {
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/channel-core";
 import { sendMedia, sendText } from "./outbound.js";
+import { renderPresentation, sendPayload } from "./reply.js";
+import { AZULA_PRESENTATION_CAPABILITIES } from "./rich.js";
 import {
   azulaSection,
   listAccountIds,
@@ -62,6 +64,26 @@ const base = {
     threads: false,
     groupManagement: false,
     polls: false,
+  },
+
+  // The agent's `message` tool gains a `presentation` parameter (title, text,
+  // buttons, selects, ...) for this channel. Nothing else is contributed: no
+  // extra actions, so `send` and the rest stay core's. The replies it produces
+  // are rendered by `reply.ts` — see the outbound adapter below.
+  actions: {
+    describeMessageTool: () => ({ capabilities: ["presentation" as const] }),
+  },
+
+  // Tells the agent what the phone can show. `inlineButtons` is the capability
+  // OpenClaw's system prompt reads to say buttons are available; without it the
+  // prompt tells the agent "Inline buttons OFF for azula" and to ask the owner
+  // to enable them, which is wrong for a channel that renders them natively.
+  agentPrompt: {
+    messageToolCapabilities: () => ["inlineButtons"],
+    messageToolHints: () => [
+      "- azula: a reply with `presentation` buttons or selects shows them as tappable buttons under the message; a tap comes back as your next user message (the button's `value` or `command`, or an `ask_user` option's label). `url` buttons are listed as links in the text, not tappable.",
+      "- azula: tables and charts arrive as text lists, so prefer short text for data. Send images and files as attachments (`media`), not as links in the text.",
+    ],
   },
 
   // What actually runs the channel: starts an account's bridge, polls it for
@@ -163,6 +185,20 @@ export const azulaChannelPlugin: ChannelPlugin<ResolvedAzulaAccount> =
         // lives in the gateway, declares.
         deliveryMode: "gateway",
         chunkerMode: "markdown",
+        // What a phone can show of a rich reply: buttons and selects as an A2UI
+        // surface, everything else (and tables and charts, which are not
+        // declared, so core flattens them) as text. Core applies these limits
+        // before our renderer runs. See rich.ts.
+        presentationCapabilities: AZULA_PRESENTATION_CAPABILITIES,
+        // `message send`, the agent's `message` tool and cron reach the phone
+        // through core's outbound path. A presentation with tappable controls is
+        // rendered to text plus controls here and delivered by `sendPayload`;
+        // any other presentation is flattened to text by core, never dropped.
+        renderPresentation,
+        // Anything richer than text and one attachment: a `location`, an
+        // `interactive`, `channelData`, or the controls `renderPresentation`
+        // left behind. Same code as the agent's own replies.
+        sendPayload,
         // The last check before delivery, and the only one that sees cron and
         // heartbeat destinations. Strict for a target someone typed, lenient
         // for a recorded route that predates the account's current phone.

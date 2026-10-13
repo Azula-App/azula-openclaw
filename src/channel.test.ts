@@ -43,4 +43,45 @@ describe("the registered channel", () => {
       label: "OpenClaw",
     });
   });
+
+  /**
+   * Capabilities are declared only because delivery now handles what they
+   * promise (reply.ts); declaring them first would have the agent send controls
+   * into a channel that dropped them.
+   */
+  describe("rich replies", () => {
+    it("exposes the message tool's presentation parameter, and no extra actions", () => {
+      const described = azulaChannelPlugin.actions?.describeMessageTool({ cfg: {} as never });
+      expect(described).toEqual({ capabilities: ["presentation"] });
+    });
+
+    it("declares what the phone can render, with tables and charts left to text", () => {
+      const caps = azulaChannelPlugin.outbound?.presentationCapabilities;
+      expect(caps).toMatchObject({
+        supported: true,
+        buttons: true,
+        selects: true,
+        context: true,
+        divider: true,
+        charts: false,
+        tables: false,
+      });
+      expect(caps?.limits?.actions?.maxActions).toBeGreaterThan(0);
+      expect(caps?.limits?.actions?.maxLabelLength).toBeGreaterThan(0);
+      expect(caps?.limits?.actions?.maxValueBytes).toBeGreaterThan(0);
+    });
+
+    it("renders presentations and carries richer payloads itself, so they are never dropped", () => {
+      expect(typeof azulaChannelPlugin.outbound?.renderPresentation).toBe("function");
+      expect(typeof azulaChannelPlugin.outbound?.sendPayload).toBe("function");
+    });
+
+    it("tells the agent buttons are available, instead of 'Inline buttons OFF'", () => {
+      const capabilities = azulaChannelPlugin.agentPrompt?.messageToolCapabilities?.({ cfg: {} as never });
+      expect(capabilities).toEqual(["inlineButtons"]);
+      const hints = azulaChannelPlugin.agentPrompt?.messageToolHints?.({ cfg: {} as never }) ?? [];
+      expect(hints.join("\n")).toMatch(/tappable buttons/);
+      expect(hints.join("\n")).toMatch(/tables and charts arrive as text/);
+    });
+  });
 });

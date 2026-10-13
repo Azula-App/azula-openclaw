@@ -31,6 +31,8 @@ import { createAgentDispatch, type ChannelRuntime } from "./agent.js";
 import { AccountLifecycle, type AccountStatus, type LifecycleOptions } from "./lifecycle.js";
 import { LoginCoordinator, type LoginDeps } from "./login.js";
 import type { Logger } from "./mcp-client.js";
+import { remoteMediaFetcher } from "./media.js";
+import { commandTextDetector } from "./reply.js";
 import { loadSdk, type Sdk } from "./sdk.js";
 
 type AzulaGateway = NonNullable<ChannelPlugin<ResolvedAzulaAccount>["gateway"]>;
@@ -173,17 +175,22 @@ export function createGatewayAdapter(deps: GatewayDeps = {}): AzulaGateway {
       // the account is about to need it.
       await login.release(accountId);
 
+      const readConfig = sdk.createRuntimeConfigReader(ctx.cfg);
       const lifecycle = new AccountLifecycle({
         account,
         logger,
         adoptDevice: (device) => persistDevice({ sdk, accountId, device, logger }),
         dispatch: createAgentDispatch({
-          readConfig: sdk.createRuntimeConfigReader(ctx.cfg),
+          readConfig,
           account,
           channel,
           sdk,
           logger,
         }),
+        // Sends that happen outside a turn (`message send`, cron) fetch remote
+        // attachments through the same guarded loader a reply does.
+        fetchMedia: remoteMediaFetcher(channel),
+        isCommandText: commandTextDetector(channel, readConfig),
         dedupe: sdk.createClaimableDedupe({
           ttlMs: DEDUPE_TTL_MS,
           memoryMaxSize: DEDUPE_MAX_ENTRIES,

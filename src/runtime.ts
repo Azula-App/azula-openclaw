@@ -8,11 +8,23 @@
  */
 
 import { AzulaBridge, MAX_FILE_BYTES } from "./bridge.js";
+import type { RemoteMediaFetcher } from "./media.js";
+import type { Logger } from "./mcp-client.js";
+import type { CommandTextDetector } from "./rich.js";
 import { SurfaceTracker } from "./surfaces.js";
 
 export type AccountRuntime = {
   bridge: AzulaBridge;
   surfaces: SurfaceTracker;
+  /**
+   * Where an outbound path with no turn around it (`message send`, cron) reports
+   * what it could not do. Optional: a send that has nowhere to log still sends.
+   */
+  logger?: Logger;
+  /** Fetches a remote attachment to local disk; absent, a remote link is sent as text. */
+  fetchMedia?: RemoteMediaFetcher;
+  /** The gateway's judgment of what text it would run as a command; see `commandTextDetector`. */
+  isCommandText?: CommandTextDetector;
 };
 
 const runtimes = new Map<string, AccountRuntime>();

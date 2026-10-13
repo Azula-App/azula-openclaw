@@ -40,6 +40,8 @@ import {
 import type { InboundChoice, InboundItem, InboundMessage } from "./inbound.js";
 import { dispatchOnce, type IngressDeps } from "./ingress.js";
 import { McpError, type Logger } from "./mcp-client.js";
+import type { RemoteMediaFetcher } from "./media.js";
+import type { CommandTextDetector } from "./rich.js";
 import {
   NO_DEVICE_YET,
   PAIRING_POLL_MS,
@@ -140,6 +142,13 @@ export type LifecycleOptions = {
   pairingPollMs?: number;
   /** Test seam: the real one builds an {@link AzulaBridge}. */
   createBridge?: (options: BridgeOptions) => AzulaBridge;
+  /**
+   * Fetches a remote attachment to local disk, for sends that happen outside a
+   * turn (`message send`, cron). Without it a remote link goes out as text.
+   */
+  fetchMedia?: RemoteMediaFetcher;
+  /** What the gateway would run as a command, so a button never answers with one. */
+  isCommandText?: CommandTextDetector;
   /** Seconds each `get_events` waits for something to arrive. */
   pollTimeoutSeconds?: number;
   /** Back-off between failed polls. */
@@ -413,7 +422,13 @@ export class AccountLifecycle {
     const device = this.#device as string;
     this.#configHint = configHint;
 
-    const runtime: AccountRuntime = { bridge, surfaces: this.#surfaces };
+    const runtime: AccountRuntime = {
+      bridge,
+      surfaces: this.#surfaces,
+      logger: this.#logger,
+      ...(this.#opts.fetchMedia ? { fetchMedia: this.#opts.fetchMedia } : {}),
+      ...(this.#opts.isCommandText ? { isCommandText: this.#opts.isCommandText } : {}),
+    };
     this.#runtime = runtime;
     registerRuntime(account.accountId, runtime);
 
