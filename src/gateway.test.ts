@@ -5,7 +5,7 @@ import { AzulaConfigError, type AzulaBridge } from "./bridge.js";
 import type { AzulaEvent } from "./events.js";
 import { createGatewayAdapter } from "./gateway.js";
 import { McpError } from "./mcp-client.js";
-import { clearRuntimes, getRuntime } from "./runtime.js";
+import { canForwardToGateway, clearRuntimes, getRuntime, isGatewayProcess } from "./runtime.js";
 
 type Ctx = ChannelGatewayContext<ResolvedAzulaAccount>;
 type Any = Record<string, any>;
@@ -153,6 +153,46 @@ async function adapterWith(fake: ReturnType<typeof fakeBridge>) {
 
 beforeEach(() => clearRuntimes());
 afterEach(() => clearRuntimes());
+
+/**
+ * These entry points only ever run in the gateway process, never in a CLI. That
+ * is what tells the outbound hooks that "no runtime for this account" means the
+ * account is down, not that they are a CLI that should hand the send over (which,
+ * in the gateway, would be a send to itself).
+ */
+describe("being the gateway process", () => {
+  it("is recorded as soon as an account starts, before any bridge is up", async () => {
+    const gateway = await adapterWith(fakeBridge());
+    const { ctx, controller } = context();
+    expect(isGatewayProcess()).toBe(false);
+
+    const running = gateway.startAccount!(ctx);
+    expect(isGatewayProcess()).toBe(true);
+    expect(canForwardToGateway("default")).toBe(false);
+
+    controller.abort();
+    await running;
+  });
+
+  it("is recorded when an account is stopped", async () => {
+    const gateway = await adapterWith(fakeBridge());
+    await gateway.stopAccount!({ accountId: "default" } as never);
+    expect(isGatewayProcess()).toBe(true);
+  });
+
+  it("is recorded when the gateway answers a login request", async () => {
+    const gateway = await adapterWith(fakeBridge());
+    // `wait` rather than `start`: with no pairing session open it has nothing to
+    // do, so this can never spawn a bridge.
+    await Promise.resolve(gateway.loginWithQrWait!({ accountId: "default", timeoutMs: 1 } as never)).catch(() => {});
+    expect(isGatewayProcess()).toBe(true);
+  });
+
+  it("is not recorded by merely creating the adapter, which a CLI does too", async () => {
+    await adapterWith(fakeBridge());
+    expect(isGatewayProcess()).toBe(false);
+  });
+});
 
 describe("startAccount", () => {
   it("stays pending for the account's whole life, then resolves when aborted", async () => {

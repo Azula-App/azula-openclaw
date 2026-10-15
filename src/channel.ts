@@ -176,14 +176,17 @@ export const azulaChannelPlugin: ChannelPlugin<ResolvedAzulaAccount> =
     base,
     outbound: {
       base: {
-        // The azula bridge is a child process of the *gateway*: only the gateway
-        // process has a running bridge to send through. `direct` would make
-        // `openclaw message send` try to deliver from the CLI process, which has
-        // none ("no running bridge"); `gateway` makes the CLI hand the send to
-        // the gateway, and in-gateway senders (the agent, cron, heartbeat)
-        // deliver locally as before. This is what WhatsApp, whose socket also
-        // lives in the gateway, declares.
-        deliveryMode: "gateway",
+        // Senders call these hooks in their own process, and the bridge is a child
+        // of the *gateway*. In the gateway (the agent's replies, its `message`
+        // tool, cron, heartbeat) that is what is wanted: the account's session is
+        // right there, and a presentation reaches `renderPresentation` below to
+        // become a card. `gateway` mode (0.0.5) was wrong for them: it sends the
+        // agent's `message` tool through the gateway's own RPC, which fails for a
+        // channel-triggered turn ("Gateway client authority closed before
+        // dispatching send"), and it flattens the presentation to text first.
+        // From `openclaw message send` the CLI process has no session, so the
+        // hooks hand that one case to the running gateway; see forward.ts.
+        deliveryMode: "direct",
         chunkerMode: "markdown",
         // What a phone can show of a rich reply: buttons and selects as an A2UI
         // surface, everything else (and tables and charts, which are not

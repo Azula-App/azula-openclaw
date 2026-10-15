@@ -40,7 +40,37 @@ const unavailable = new Map<string, string>();
 
 const keyFor = (accountId?: string | null) => accountId?.trim() || "default";
 
+/**
+ * Whether this process is the gateway.
+ *
+ * The outbound hooks run in two kinds of process: the gateway, which owns every
+ * account's `azula mcp` session, and a CLI (`openclaw message send`), which owns
+ * none and must hand the send to the gateway. OpenClaw 2026.10.2 offers a
+ * plugin no signal for which one it is (the plugin registers in full mode in
+ * both, and an outbound context carries nothing that says so), so the plugin
+ * keeps its own: set by the only code that runs in the gateway process and not
+ * in a CLI, the gateway adapter's entry points (`markGatewayProcess`) and the
+ * registry writes the account lifecycle makes. It never goes back to false.
+ *
+ * It is what keeps a gateway whose account is waiting for a phone, blocked or
+ * stopped from "forwarding" a send to itself.
+ */
+let inGateway = false;
+
+/** Record that this is the gateway process. Called from gateway-only code. */
+export function markGatewayProcess(): void {
+  inGateway = true;
+}
+
+export function isGatewayProcess(): boolean {
+  return inGateway;
+}
+
+/** Accounts with a send to the gateway in flight from this process, with how many. */
+const forwarding = new Map<string, number>();
+
 export function registerRuntime(accountId: string, runtime: AccountRuntime): void {
+  inGateway = true;
   unavailable.delete(keyFor(accountId));
   runtimes.set(accountId, runtime);
 }
@@ -63,6 +93,7 @@ export function unregisterRuntime(
 
 /** Record why an account cannot currently send. Cleared by {@link registerRuntime}. */
 export function markUnavailable(accountId: string, reason: string): void {
+  inGateway = true;
   unavailable.set(keyFor(accountId), reason);
 }
 
@@ -72,6 +103,37 @@ export function unavailableReason(accountId?: string | null): string | undefined
 
 export function getRuntime(accountId?: string | null): AccountRuntime | undefined {
   return runtimes.get(keyFor(accountId));
+}
+
+/**
+ * Whether a send for an account with no runtime should be handed to the gateway.
+ *
+ * Only a CLI process may: it has no runtime because it never holds a session.
+ * The gateway has none when the account is waiting for a phone, blocked or
+ * stopped, and forwarding *that* to the gateway would be a send to itself, so
+ * it fails with the reason instead. The in-flight check is the backstop: even if
+ * this process were misjudged to be a CLI, the gateway's handling of the
+ * forwarded send runs in this same process while the forward is outstanding, and
+ * finds the account already forwarding, so a loop is at most one hop.
+ */
+export function canForwardToGateway(accountId?: string | null): boolean {
+  return !inGateway && !getRuntime(accountId) && !forwarding.has(keyFor(accountId));
+}
+
+/** Run a send to the gateway, marking the account as forwarding for its duration. */
+export async function whileForwarding<T>(
+  accountId: string | null | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const key = keyFor(accountId);
+  forwarding.set(key, (forwarding.get(key) ?? 0) + 1);
+  try {
+    return await run();
+  } finally {
+    const left = (forwarding.get(key) ?? 1) - 1;
+    if (left <= 0) forwarding.delete(key);
+    else forwarding.set(key, left);
+  }
 }
 
 /** The runtime for an account, or a {@link NoRuntimeError} saying why there is none. */
@@ -86,9 +148,12 @@ export function allRuntimes(): Array<[string, AccountRuntime]> {
   return [...runtimes.entries()];
 }
 
+/** Forget everything, including which kind of process this is. For tests. */
 export function clearRuntimes(): void {
   runtimes.clear();
   unavailable.clear();
+  forwarding.clear();
+  inGateway = false;
 }
 
 export class NoRuntimeError extends Error {

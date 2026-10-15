@@ -1,14 +1,18 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AzulaBridge } from "./bridge.js";
 import {
+  canForwardToGateway,
   clearRuntimes,
   getRuntime,
+  isGatewayProcess,
+  markGatewayProcess,
   markUnavailable,
   NoRuntimeError,
   registerRuntime,
   requireRuntime,
   unavailableReason,
   unregisterRuntime,
+  whileForwarding,
   type AccountRuntime,
 } from "./runtime.js";
 import { SurfaceTracker } from "./surfaces.js";
@@ -76,5 +80,54 @@ describe("a send with nothing to send through", () => {
     registerRuntime("default", runtime());
     expect(unavailableReason("default")).toBeUndefined();
     expect(requireRuntime("default")).toBeDefined();
+  });
+});
+
+describe("telling a CLI from the gateway", () => {
+  it("lets a process with no runtime and no sign of being the gateway forward a send", () => {
+    expect(isGatewayProcess()).toBe(false);
+    expect(canForwardToGateway("default")).toBe(true);
+    expect(canForwardToGateway(undefined)).toBe(true);
+  });
+
+  it("never lets the gateway forward, once anything has said it is the gateway", () => {
+    markGatewayProcess();
+    expect(canForwardToGateway("default")).toBe(false);
+  });
+
+  it("takes a registered runtime as proof, and an account marked unavailable too", () => {
+    registerRuntime("a", { bridge: {} as never, surfaces: new SurfaceTracker() });
+    expect(isGatewayProcess()).toBe(true);
+    clearRuntimes();
+    expect(isGatewayProcess()).toBe(false);
+    markUnavailable("b", "stopped");
+    expect(isGatewayProcess()).toBe(true);
+  });
+
+  it("does not forward for an account that has a runtime", () => {
+    registerRuntime("work", { bridge: {} as never, surfaces: new SurfaceTracker() });
+    expect(canForwardToGateway("work")).toBe(false);
+  });
+
+  it("refuses a second forward for an account while one is in flight, and counts nested ones", async () => {
+    let inner: boolean | undefined;
+    let innerOther: boolean | undefined;
+    await whileForwarding("default", async () => {
+      inner = canForwardToGateway("default");
+      innerOther = canForwardToGateway("work");
+      await whileForwarding("default", async () => undefined);
+      // The inner one finishing must not clear the outer one's mark.
+      expect(canForwardToGateway("default")).toBe(false);
+    });
+    expect(inner).toBe(false);
+    expect(innerOther).toBe(true);
+    expect(canForwardToGateway("default")).toBe(true);
+  });
+
+  it("clears the mark when the forward throws", async () => {
+    await whileForwarding("default", async () => {
+      throw new Error("x");
+    }).catch(() => {});
+    expect(canForwardToGateway("default")).toBe(true);
   });
 });

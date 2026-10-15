@@ -51,7 +51,9 @@ import {
   hasAnswerableControls,
   type CommandTextDetector,
 } from "./rich.js";
-import { nextMessageId, requireRuntime } from "./runtime.js";
+import { forwardToGateway } from "./forward.js";
+import { forwardTarget, runtimeOrNull } from "./outbound.js";
+import { canForwardToGateway, nextMessageId } from "./runtime.js";
 import { surfaceIdFor, type SurfaceTracker } from "./surfaces.js";
 
 /** Where, in `ReplyPayload.channelData`, the outbound renderer leaves the controls for {@link sendPayload}. */
@@ -330,9 +332,13 @@ export function renderPresentation(params: {
   payload: ReplyPayload;
   presentation: MessagePresentation;
   sourcePresentation?: MessagePresentation | undefined;
+  ctx?: { accountId?: string | null | undefined } | undefined;
 }): ReplyPayload | null {
   const { payload, presentation } = params;
   if (!hasAnswerableControls(presentation)) return null;
+  // From a CLI the send goes to the gateway over an RPC that carries text and
+  // attachments only, so there is no card to build: let core flatten it to text.
+  if (canForwardToGateway(params.ctx?.accountId)) return null;
 
   const textIsFallback = payload.presentationTextMode === "fallback";
   const text = renderMessagePresentationFallbackText({
@@ -354,8 +360,23 @@ export function renderPresentation(params: {
 export async function sendPayload(ctx: {
   payload: ReplyPayload;
   accountId?: string | null | undefined;
+  to?: string | undefined;
 }): Promise<{ channel: string; messageId: string; outcome?: "not_sent" }> {
-  const runtime = requireRuntime(ctx.accountId);
+  const runtime = runtimeOrNull(ctx);
+  if (!runtime) {
+    // A CLI process: hand the gateway the reply as text and attachments.
+    const reply = await prepareReply(ctx.payload);
+    if (reply.text.trim() === "" && reply.mediaUrls.length === 0) {
+      return { channel: CHANNEL_ID, messageId: "", outcome: "not_sent" };
+    }
+    const sent = await forwardToGateway({
+      ...forwardTarget(ctx),
+      message: reply.text,
+      mediaUrls: reply.mediaUrls,
+    });
+    return { channel: CHANNEL_ID, messageId: sent.messageId };
+  }
+
   const logger = runtime.logger ?? { debug() {}, info() {}, warn() {}, error() {} };
   const outcome = await deliverReply(
     {

@@ -32,6 +32,7 @@ import {
 import { pairingMessage } from "./access.js";
 import { AzulaConfigError } from "./bridge.js";
 import { CHANNEL_ID } from "./channel-id.js";
+import { callGatewayViaCli, type CallGateway } from "./gateway-call.js";
 import type { AccountLifecycle } from "./lifecycle.js";
 import type { Logger } from "./mcp-client.js";
 import { NO_DEVICE_YET, PairingSession, type PairingSessionOptions } from "./pairing.js";
@@ -269,44 +270,25 @@ export class LoginCoordinator {
 
 // -- CLI side ------------------------------------------------------------------
 
-/** One gateway RPC, as the CLI makes it. */
-export type CallGateway = (
-  method: string,
-  params: Record<string, unknown>,
-  timeoutMs: number,
-) => Promise<Record<string, unknown>>;
+export type { CallGateway };
 
 /** How long one `web.login.wait` blocks, and how long the CLI waits in all. */
 const WAIT_SLICE_MS = 30_000;
 const TOTAL_WAIT_MS = 15 * 60_000;
 const START_TIMEOUT_MS = 60_000;
 
-/** The real thing: the same gateway client every other CLI command uses. */
-async function callGatewayViaCli(
-  method: string,
-  params: Record<string, unknown>,
-  timeoutMs: number,
-): Promise<Record<string, unknown>> {
-  const gateway = await import("openclaw/plugin-sdk/gateway-runtime");
-  try {
-    return await gateway.callGatewayFromCli(
-      method,
-      { timeout: String(timeoutMs) },
-      params,
-      { progress: false },
-    );
-  } catch (err) {
-    if (gateway.isGatewayTransportError(err)) {
-      throw new Error(
-        `could not reach the OpenClaw gateway (${errMessage(err)}).\n` +
-          "`openclaw channels login` asks the running gateway for azula's invite, because a phone pairs with the " +
-          "channel's own azula session and only the gateway's account can hold it. Start the gateway " +
-          "(`openclaw gateway`), or pair offline with the plugin's scripts/pair.mjs (see its README).",
-      );
-    }
-    throw err;
-  }
-}
+/** The real thing, worded for a login that cannot find the gateway. */
+const callGatewayForLogin: CallGateway = (method, params, timeoutMs) =>
+  callGatewayViaCli(
+    method,
+    params,
+    timeoutMs,
+    (cause) =>
+      `could not reach the OpenClaw gateway (${cause}).\n` +
+      "`openclaw channels login` asks the running gateway for azula's invite, because a phone pairs with the " +
+      "channel's own azula session and only the gateway's account can hold it. Start the gateway " +
+      "(`openclaw gateway`), or pair offline with the plugin's scripts/pair.mjs (see its README).",
+  );
 
 export type LoginRuntime = { log: (message: string) => void };
 
@@ -372,7 +354,7 @@ export async function runLogin(
   } = {},
 ): Promise<void> {
   const { runtime } = params;
-  const call = deps.call ?? callGatewayViaCli;
+  const call = deps.call ?? callGatewayForLogin;
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? sleepMs;
   const slice = deps.waitSliceMs ?? WAIT_SLICE_MS;

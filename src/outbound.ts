@@ -9,17 +9,23 @@
 import { statSync } from "node:fs";
 import type { AzulaBridge } from "./bridge.js";
 import { CHANNEL_ID } from "./channel-id.js";
+import { forwardToGateway } from "./forward.js";
 import { isRemoteUrl, linkNote, resolveMedia } from "./media.js";
 import {
   assertSendableSize,
+  canForwardToGateway,
+  getRuntime,
   nextMessageId,
   requireRuntime,
+  type AccountRuntime,
 } from "./runtime.js";
 
 export { localPathFor } from "./media.js";
 
 /** The subset of the outbound context these hooks actually read. */
 export type OutboundCtx = {
+  /** The target as core resolved it (`azula:<device>`). */
+  to?: string | undefined;
   text?: string;
   mediaUrl?: string | undefined;
   accountId?: string | null | undefined;
@@ -34,11 +40,33 @@ export type OutboundCtx = {
  * unknown device, say) becomes a send error here.
  */
 export async function sendText(ctx: OutboundCtx): Promise<{ messageId: string }> {
-  const runtime = requireRuntime(ctx.accountId);
-
   const text = ctx.text ?? "";
+  const runtime = runtimeOrNull(ctx);
+  if (!runtime) return forwardToGateway({ ...forwardTarget(ctx), message: text, mediaUrls: [] });
+
   await runtime.bridge.sendMessage(text);
   return { messageId: nextMessageId(CHANNEL_ID) };
+}
+
+/**
+ * The account's runtime, or null when this is a CLI process and the send should
+ * go to the gateway instead (see forward.ts).
+ *
+ * Throws {@link NoRuntimeError} when there is nothing to send through and
+ * nowhere to hand the send: the gateway's own account is waiting for a phone,
+ * blocked or stopped (it must not "forward" to itself), or the core gave no
+ * target to forward.
+ */
+export function runtimeOrNull(ctx: { accountId?: string | null | undefined; to?: string | undefined }): AccountRuntime | null {
+  const runtime = getRuntime(ctx.accountId);
+  if (runtime) return runtime;
+  if (ctx.to && canForwardToGateway(ctx.accountId)) return null;
+  return requireRuntime(ctx.accountId);
+}
+
+/** The part of a send the gateway needs to route it, from an outbound context. */
+export function forwardTarget(ctx: { accountId?: string | null | undefined; to?: string | undefined }) {
+  return { to: ctx.to as string, accountId: ctx.accountId };
 }
 
 /**
@@ -75,13 +103,17 @@ export async function sendLocalFile(
  * message. (A local file keeps its caption: there is nothing to wait for.)
  */
 export async function sendMedia(ctx: OutboundCtx): Promise<{ messageId: string }> {
-  const runtime = requireRuntime(ctx.accountId);
-
   const mediaUrl = ctx.mediaUrl;
   if (!mediaUrl) {
     // Nothing to attach; fall back to the text path rather than failing, so a
     // payload that lost its media still reaches the phone.
     return sendText(ctx);
+  }
+
+  const runtime = runtimeOrNull(ctx);
+  if (!runtime) {
+    // A CLI process: the gateway fetches or reads the attachment and sends it.
+    return forwardToGateway({ ...forwardTarget(ctx), message: ctx.text?.trim() ?? "", mediaUrls: [mediaUrl] });
   }
 
   const caption = ctx.text?.trim();

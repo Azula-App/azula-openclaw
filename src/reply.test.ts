@@ -6,7 +6,7 @@ import { shouldComputeCommandAuthorized } from "openclaw/plugin-sdk/command-dete
 import { renderPresentationForDelivery } from "openclaw/plugin-sdk/interactive-runtime";
 import { azulaChannelPlugin } from "./channel.js";
 import { commandTextDetector, prepareReply, renderPresentation, sendPayload } from "./reply.js";
-import { clearRuntimes, NoRuntimeError, registerRuntime } from "./runtime.js";
+import { clearRuntimes, markGatewayProcess, NoRuntimeError, registerRuntime } from "./runtime.js";
 import { SurfaceTracker } from "./surfaces.js";
 
 type Any = Record<string, any>;
@@ -348,7 +348,13 @@ describe("renderPresentation", () => {
     expect(result).toBeNull();
   });
 
+  it("declines in a CLI process, which can only hand the gateway text", () => {
+    const presentation = { blocks: [{ type: "buttons" as const, buttons: [{ label: "Go", value: "go" }] }] };
+    expect(renderPresentation({ payload: { presentation }, presentation, ctx: { accountId: "default" } })).toBeNull();
+  });
+
   it("carries the adapted controls in channelData for sendPayload, keeping other channelData", () => {
+    markGatewayProcess();
     const presentation = { blocks: [{ type: "buttons" as const, buttons: [{ label: "Go", value: "go" }] }] };
     const result = renderPresentation({
       payload: { text: "Ready?", presentation, channelData: { keep: true } },

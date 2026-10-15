@@ -259,12 +259,14 @@ describe("the channel's registered adapters", () => {
   });
 
   /**
-   * The bridge is a child of the gateway process. `direct` would make
-   * `openclaw message send` try to deliver from the CLI process, where there is
-   * no bridge.
+   * `gateway` mode routed the agent's own `message` tool through the gateway's
+   * RPC, which fails for a channel-triggered turn ("Gateway client authority
+   * closed before dispatching send"), and flattened a presentation to text
+   * before it could become a card. The CLI case is handled by the hooks
+   * themselves (see forward.test.ts).
    */
-  it("hands CLI sends to the gateway, where the azula session lives", () => {
-    expect(azulaChannelPlugin.outbound?.deliveryMode).toBe("gateway");
+  it("delivers in the sender's own process, so the gateway's senders reach the bridge directly", () => {
+    expect(azulaChannelPlugin.outbound?.deliveryMode).toBe("direct");
   });
 
   it("offers the login command as its pairing affordance", () => {

@@ -59,8 +59,10 @@ only some other channel understands) is logged as a warning that names which
 parts it had, without their content.
 
 The agent is told all this: azula declares the `presentation` parameter of the
-`message` tool and the `inlineButtons` capability, so `message send` with
-`presentation`, cron announcements and the agent's own replies take the same path.
+`message` tool and the `inlineButtons` capability, so the agent's `message` tool
+with `presentation`, cron announcements and its own replies take the same path.
+(`openclaw message send` from a terminal sends text and attachments; see
+[Sending to the phone](#sending-to-the-phone).)
 
 ## Requirements
 
@@ -286,12 +288,21 @@ openclaw message send --channel azula --account work --target <work-device> -m "
 
 An azula account has exactly one phone, so a target is checked rather than
 chosen: a name that isn't the account's device is refused, naming the paired
-device(s) and, if it belongs to another account, which `--account` to use. The
-delivery happens in the gateway (that is where the account's azula session
-lives), so the gateway must be running. `cron` announcements
+device(s) and, if it belongs to another account, which `--account` to use.
+
+The account's azula session lives in the gateway, so every send ends up there.
+Senders that already run in the gateway (the agent's replies, its `message`
+tool, `cron`, heartbeat) deliver directly, in that process, and a `presentation`
+with buttons becomes a card. `openclaw message send` runs in its own process,
+which has no session, so it hands the message to the running gateway, which
+delivers it. The gateway must be running for that (otherwise the command says
+so and how to start it), and a message sent that way carries text and
+attachments: a `--presentation` arrives as its text, without the buttons. If
+the account is down (waiting for a phone to pair, blocked, stopped) the send
+fails with that reason rather than being passed around. `cron` announcements
 (`openclaw cron add … --announce --channel azula --account <id> --to <device>`)
-take the same path, and a heartbeat with `heartbeat.target: "azula"` resolves to
-the account's phone, with or without a `to`. (`cron` refuses to guess a
+take the direct path, and a heartbeat with `heartbeat.target: "azula"` resolves
+to the account's phone, with or without a `to`. (`cron` refuses to guess a
 destination for an isolated job, so give it the `--to`.)
 
 ## How it works

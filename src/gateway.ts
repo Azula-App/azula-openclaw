@@ -33,6 +33,7 @@ import { LoginCoordinator, type LoginDeps } from "./login.js";
 import type { Logger } from "./mcp-client.js";
 import { remoteMediaFetcher } from "./media.js";
 import { commandTextDetector } from "./reply.js";
+import { markGatewayProcess } from "./runtime.js";
 import { loadSdk, type Sdk } from "./sdk.js";
 
 type AzulaGateway = NonNullable<ChannelPlugin<ResolvedAzulaAccount>["gateway"]>;
@@ -159,6 +160,9 @@ export function createGatewayAdapter(deps: GatewayDeps = {}): AzulaGateway {
 
   return {
     startAccount: async (ctx) => {
+      // Only the gateway runs this. From here on, a send that finds no runtime
+      // for an account is the account being down, not a CLI (see runtime.ts).
+      markGatewayProcess();
       const channel = ctx.channelRuntime as unknown as ChannelRuntime | undefined;
       if (!channel?.inbound) {
         throw new Error(
@@ -217,14 +221,19 @@ export function createGatewayAdapter(deps: GatewayDeps = {}): AzulaGateway {
     },
 
     stopAccount: async (ctx) => {
+      markGatewayProcess();
       await live.get(ctx.accountId)?.stop();
     },
 
     // `web.login.start` / `web.login.wait`: the gateway half of
     // `openclaw channels login`. See login.ts.
-    loginWithQrStart: (params) =>
-      login.start({ accountId: params.accountId, force: params.force }),
-    loginWithQrWait: (params) =>
-      login.wait({ accountId: params.accountId, timeoutMs: params.timeoutMs }),
+    loginWithQrStart: (params) => {
+      markGatewayProcess();
+      return login.start({ accountId: params.accountId, force: params.force });
+    },
+    loginWithQrWait: (params) => {
+      markGatewayProcess();
+      return login.wait({ accountId: params.accountId, timeoutMs: params.timeoutMs });
+    },
   };
 }
